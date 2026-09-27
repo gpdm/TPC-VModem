@@ -2,7 +2,7 @@
 # RUN PPPD DAEMON
 #
 # Oliver Molini 2021
-# 
+#
 # Billy Stoughton II for bug fixes and contributions
 #
 # Licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International Public License
@@ -28,6 +28,25 @@
 # Default:    lcpidle=5
 lcpidle=10
 
+# PPP record stream
+# pppd writes its live serial record stream into this FIFO. The noise
+# reader must keep draining the FIFO for the whole PPP session, even
+# after it has stopped generating sound.
+recordfifo="/run/tpc-vmodem-ppp-$$.fifo"
+noisereader="./ppp_noise.py"
+recordpid=
+
+cleanup_record () {
+  if [[ -n "$recordpid" ]] && kill -0 "$recordpid" 2>/dev/null; then
+    kill "$recordpid" 2>/dev/null
+    wait "$recordpid" 2>/dev/null
+  fi
+
+  rm -f "$recordfifo"
+}
+
+trap cleanup_record EXIT
+
 #
 # Trumpet Winsock 3.0 revision D for Windows 3.1
 # by default requires a fake login shell.
@@ -52,8 +71,43 @@ iptables -t nat -A POSTROUTING -o $etherp -j MASQUERADE
 iptables -t filter -A FORWARD -i ppp0 -o $etherp -m state --state RELATED,ESTABLISHED -j ACCEPT
 iptables -t filter -A FORWARD -i $etherp -o ppp0 -j ACCEPT
 
+# Create the record FIFO before pppd starts.
+rm -f "$recordfifo"
+if ! mkfifo "$recordfifo"; then
+  printf "\nUnable to create PPP record FIFO.\n"
+  exit 1
+fi
+
+# Start the record reader first. It will block on the FIFO until pppd
+# opens the write side. Until ppp_noise.py exists, simply drain the
+# stream so the PPP record path can already be tested safely.
+if [[ -f "$noisereader" ]]; then
+  python3 "$noisereader" "$recordfifo" &
+else
+  cat "$recordfifo" >/dev/null &
+fi
+recordpid=$!
+
 # Run PPP daemon and establish a link.
-pppd noauth nodetach local lock lcp-echo-interval $lcpidle lcp-echo-failure 3 proxyarp ms-dns 8.8.4.4 ms-dns 8.8.8.8 10.0.100.1:10.0.100.2 /dev/$serport $baud
+pppd noauth nodetach local lock \
+  lcp-echo-interval $lcpidle lcp-echo-failure 3 \
+  proxyarp ms-dns 8.8.4.4 ms-dns 8.8.8.8 \
+  10.0.100.1:10.0.100.2 \
+  record "$recordfifo" \
+  /dev/$serport $baud
+
+# pppd is finished, so the record reader is no longer needed.
+# Normally it will already have seen EOF and exited. If it is still
+# around, stop it here so a failed pppd startup cannot leave us waiting.
+if [[ -n "$recordpid" ]]; then
+  if kill -0 "$recordpid" 2>/dev/null; then
+    kill "$recordpid" 2>/dev/null
+  fi
+  wait "$recordpid" 2>/dev/null
+  recordpid=
+fi
+
+rm -f "$recordfifo"
 
 # Flush iptables
 iptables -t filter -F FORWARD
