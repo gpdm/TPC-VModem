@@ -100,6 +100,19 @@ resultverbose=1
 #
 TERM="vt100"
 
+# GPIO sound helper
+# -----------------
+# The helper is optional. If it is missing or fails, modem operation
+# continues without sound.
+soundhelper="./sound.py"
+
+# Hayes speaker mode. Default is M1.
+speaker_mode=1
+# Dialtone is only heard briefly after ATD, not while idle.
+dialtone_time=1
+dialtone_pid=
+dtmf_pid=
+
 # EXPORT SHELL VARS
 # -----------------
 export serport
@@ -148,6 +161,39 @@ readtty () {
   eval $__resultvar="'$result'"
 }
 
+# GPIO SOUND
+# ----------
+
+start_dialtone () {
+  # M0 is silent. M3 is silent during dialing.
+  if [[ "$speaker_mode" == "0" || "$speaker_mode" == "3" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$soundhelper" ]]; then
+    return
+  fi
+
+  python3 ./sound.py dialtone ${dialtone_time}
+}
+
+
+start_dtmf () {
+  local digits="$1"
+
+  # M0 is always silent. M3 is silent while dialing.
+  if [[ "$speaker_mode" == "0" || "$speaker_mode" == "3" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$soundhelper" ]]; then
+    return
+  fi
+
+  python3 "$soundhelper" dtmf "$digits" >/dev/null 2>&1 &
+  dtmf_pid=$!
+}
+
 export -f sendtty
 export -f readtty
 export -f ttyinit
@@ -164,6 +210,8 @@ sendtty "My current IP address is $(hostname -I).\n"
 sendtty "\n"
 sendtty "TYPE \"HELP\" FOR COMMAND REFERENCE.\n"
 sendtty "READY.\n"
+
+# No idle dialtone. It starts only when ATD is received.
 
 # execute hayes commands
 dohayes () {
@@ -203,12 +251,24 @@ dohayes () {
   # - M0 Speaker always off
   # - M1 Speaker on until carrier detected
   # - M2 Speaker always on
-  # - M3 Speaker on only while answering
+  # - M3 Speaker off while dialing
   if [[ $hcmd == 'M' ]]; then
-    if [[ $hparm == '' ]]; then result=0; fi
-    if [[ $hparm == '1' ]]; then result=0; fi
-    if [[ $hparm == '2' ]]; then result=0; fi
-    if [[ $hparm == '3' ]]; then result=0; fi
+    if [[ $hparm == '' || $hparm == '1' ]]; then
+      speaker_mode=1
+      result=0
+    fi
+    if [[ $hparm == '0' ]]; then
+      speaker_mode=0
+      result=0
+    fi
+    if [[ $hparm == '2' ]]; then
+      speaker_mode=2
+      result=0
+    fi
+    if [[ $hparm == '3' ]]; then
+      speaker_mode=3
+      result=0
+    fi
   fi
 
   # ATQn Result codes
@@ -251,7 +311,7 @@ dohayes () {
 
   # ATZ Reset modem
   # - Zn  Restore stored profile n
-  if [[ $hcmd == 'Z' ]]; then echoser=1; resultverbose=1; carrierdetect=0; result=0; fi
+  if [[ $hcmd == 'Z' ]]; then echoser=1; resultverbose=1; carrierdetect=0; speaker_mode=1; result=0; fi
 
   # AT&Cn Carrier-detect
   # - &C0 Force DCD signal active
@@ -277,7 +337,7 @@ dohayes () {
 
   # AT&F Restore factory settings
   # - &Fn Use profile n
-  if [[ $hcmd == '&F' ]]; then echoser=1; resultverbose=1; carrierdetect=0; result=0; fi
+  if [[ $hcmd == '&F' ]]; then echoser=1; resultverbose=1; carrierdetect=0; speaker_mode=1; result=0; fi
 
   # AT&K DTE - MODEM Flow control
   # - &K0 Local flow control off
@@ -400,19 +460,32 @@ while [ "$continue" != "1" ]; do
 
       # ATD Dial number
       if [[ ! -z "$number" ]]; then
+        # Dialtone starts when ATD arrives, then gives way to DTMF.
+        start_dialtone
+        start_dtmf "$number"
+
         if [[ $resultverbose == 1 ]]; then sendtty "RINGING\n"; fi
-        sleep 2
+        sleep 1
+
+        # A number-specific script wins. Everything else is handled
+        # by the default PPP service.
         if [ -f "$number.sh" ]; then
+          dialscript="./$number.sh"
+        else
+          dialscript="./ppp.sh"
+        fi
+
+        if [ -f "$dialscript" ]; then
           if [[ $resultverbose == 1 ]]; then sendtty "CONNECT $baud\n"; else sendtty "1\n"; fi
+
           # Assert DCD when carrier detection is turned on (for Trumpet Winsock)
           if [[ $carrierdetect == 1 ]]; then exec 99>&-; fi
 
           # Tell the terminal to use CR/LF for newlines instead of just CR.
           echo -en "\x1b[20h" > /dev/$serport
 
-          # Run script
-          #/sbin/getty -8 -L $serport $baud $TERM -n -l "./$number.sh"
-          ./$number.sh
+          # Run the selected service. vmodem waits here until it returns.
+          "$dialscript"
 
           if [[ $carrierdetect == 1 ]]; then exec 99<>/dev/$serport; fi
 
@@ -420,10 +493,13 @@ while [ "$continue" != "1" ]; do
           ttyinit
           result=3
         else
-          # Phone number is valid, but no internal script by that name exists
+          # The default PPP service is missing.
           result=3
         fi
+
         number=""
+
+        # Stay silent after disconnect. Wait for the next ATD.
       fi
 
       #
@@ -456,11 +532,11 @@ while [ "$continue" != "1" ]; do
       sendtty "Common Hayes commands:\n"
       sendtty "AT.........Tests serial connection, prints OK if successful\n"
       sendtty "ATE0/ATE1..Switch terminal echo 0-off or 1-on\n"
-      sendtty "ATD#.......Fork #.sh and output on terminal\n"
-      sendtty "ATD1.......Fork 1.sh, which by default starts a PPP connection\n"
+      sendtty "ATD#.......Run #.sh, or ppp.sh if no matching script exists\n"
+      sendtty "ATM0-3.....Control virtual modem speaker\n"
       sendtty "ATZ........Reset modem settings\n"
       sendtty "\n"
-      sendtty "To establish connection over PPP, dial 1 (ATDT1)\n"
+      sendtty "Dial any number for PPP unless a matching number script exists.\n"
       sendtty "\n"
       sendtty "READY.\n"
     fi
