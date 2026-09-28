@@ -12,12 +12,14 @@ PIGPIOD_OVERRIDE_FILE=/etc/systemd/system/pigpiod.service.d/zz-tpc-vmodem.conf
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 move_setup() {
+    echo '[1/5] Preparing installation directory'
     mkdir -p "$PROJECT_DIR"
     if [[ "$SOURCE_SCRIPT" != "$PROJECT_DIR/setup.sh" ]]; then
         mv -f -- "$SOURCE_SCRIPT" "$PROJECT_DIR/setup.sh" || fail 'Could not move setup.sh.'
         echo "Moved setup.sh to $PROJECT_DIR"
     fi
     cd -- "$PROJECT_DIR"
+    echo "Installation directory: $PROJECT_DIR"
 }
 
 download_scripts() {
@@ -42,6 +44,7 @@ download_scripts() {
 }
 
 check_scripts() {
+    echo '[2/5] Checking project files'
     local missing=() script
     for script in vmodem.sh ppp.sh sound.py ppp_noise.py vmodem.service; do
         [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
@@ -57,6 +60,7 @@ check_scripts() {
 }
 
 check_dependencies() {
+    echo '[3/5] Checking system dependencies'
     local needed=() entry program package
 
     # Required to run the setup itself, not packages to install.
@@ -96,19 +100,18 @@ check_dependencies() {
 }
 
 configure_pigpiod() {
-    local pigpiod_bin config changed=false
+    echo '[4/5] Configuring pigpiod'
+    local pigpiod_bin config attempt
     pigpiod_bin="$(command -v pigpiod)" || fail 'pigpiod is unavailable.'
-
     config=$(printf '[Service]\nExecStart=\nExecStart=%s -l -m\n' "$pigpiod_bin")
 
     if systemctl cat pigpiod.service >/dev/null 2>&1; then
-        # Preserve the packaged service, modify only our own drop-in.
-        if [[ ! -f "$PIGPIOD_OVERRIDE_FILE" ]]; then
-            mkdir -p "$(dirname "$PIGPIOD_OVERRIDE_FILE")"
-            printf '%s\n' "$config" > "$PIGPIOD_OVERRIDE_FILE"
-        fi
+        # Keep the packaged unit; maintain only our drop-in.
+        mkdir -p "$(dirname "$PIGPIOD_OVERRIDE_FILE")"
+        printf '%s\n' "$config" > "$PIGPIOD_OVERRIDE_FILE"
+        echo 'pigpiod: installed systemd override (-l -m)'
     else
-        # Source installations may provide pigpiod without a systemd unit.
+        # Source installations may have no packaged systemd unit.
         cat > /etc/systemd/system/pigpiod.service <<UNIT
 [Unit]
 Description=pigpio daemon for TPC VModem
@@ -121,54 +124,44 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 UNIT
+        echo 'pigpiod: created systemd service (-l -m)'
     fi
 
+    echo 'pigpiod: enabling and restarting service'
     systemctl daemon-reload
-    systemctl enable pigpiod.service >/dev/null
+    systemctl enable pigpiod.service
     systemctl restart pigpiod.service || fail 'Could not restart pigpiod. Stop any manually started pigpiod first.'
 
-    # One functional check, rather than repeating systemctl status checks.
-    python3 - <<'PY'
-import pigpio
-pi = pigpio.pi('127.0.0.1')
-try:
-    if not pi.connected:
-        raise SystemExit('ERROR: pigpiod is not accepting local connections.')
-finally:
-    pi.stop()
-PY
-    echo 'pigpiod: OK (automatic startup, -l -m)'
+    echo 'pigpiod: waiting for the daemon to accept connections (up to 10 seconds)'
+    for attempt in {1..10}; do
+        if python3 -c 'import pigpio, sys; pi = pigpio.pi("127.0.0.1"); ok = pi.connected; pi.stop(); sys.exit(0 if ok else 1)' >/dev/null 2>&1; then
+            echo 'pigpiod: OK'
+            return
+        fi
+        sleep 1
+    done
+    fail 'pigpiod did not become reachable. Check: journalctl -u pigpiod -n 30'
 }
 
 install_vmodem_service() {
+    echo '[5/5] Installing VModem systemd service'
     local unit=/etc/systemd/system/vmodem.service
-    local temp
-    temp="$(mktemp)"
 
-    # Accept either the old /boot unit or a newer /opt unit from GitHub.
-    sed 's|/boot/vmodem|/opt/vmodem|g' "$PROJECT_DIR/vmodem.service" > "$temp"
-    if ! grep -Fqx "WorkingDirectory=$PROJECT_DIR" "$temp" || \
-       ! grep -Fqx "ExecStart=/bin/bash $PROJECT_DIR/vmodem.sh" "$temp"; then
-        rm -f -- "$temp"
-        fail 'vmodem.service has unexpected paths. Expected /opt/vmodem.'
-    fi
-
-    if [[ ! -f "$unit" ]] || ! cmp -s "$temp" "$unit"; then
-        install -m 0644 "$temp" "$unit"
-        systemctl daemon-reload
-        # Restart only if an older systemd instance is already running.
-        systemctl try-restart vmodem.service
+    if [[ ! -f "$unit" ]] || ! cmp -s "$PROJECT_DIR/vmodem.service" "$unit"; then
+        install -m 0644 "$PROJECT_DIR/vmodem.service" "$unit"
         echo 'vmodem.service: installed'
     else
         echo 'vmodem.service: unchanged'
     fi
-    rm -f -- "$temp"
 
     if [[ -f /etc/rc.local ]] && grep -Eq '^[[:space:]]*[^#]*vmodem' /etc/rc.local; then
         echo 'WARNING: /etc/rc.local still references vmodem. Remove the old startup entry.' >&2
     fi
 
-    systemctl enable --now vmodem.service >/dev/null
+    systemctl daemon-reload
+    echo 'vmodem.service: enabling and restarting service'
+    systemctl enable vmodem.service
+    systemctl restart vmodem.service || fail 'Could not start vmodem.service. Check: journalctl -u vmodem -n 30'
     echo 'vmodem.service: enabled and started'
 }
 
