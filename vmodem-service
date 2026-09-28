@@ -1,0 +1,16 @@
+[Unit]
+Description=TPC VModem virtual Hayes modem
+Requires=pigpiod.service
+After=network.target pigpiod.service
+
+[Service]
+Type=simple
+WorkingDirectory=/boot/vmodem
+ExecStart=/bin/bash /boot/vmodem/vmodem.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

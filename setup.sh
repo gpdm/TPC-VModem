@@ -5,13 +5,13 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-OVERRIDE_FILE=/etc/systemd/system/pigpiod.service.d/zz-tpc-vmodem.conf
+PIGPIOD_OVERRIDE_FILE=/etc/systemd/system/pigpiod.service.d/zz-tpc-vmodem.conf
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 check_scripts() {
     local missing=() script
-    for script in vmodem.sh ppp.sh sound.py ppp_noise.py; do
+    for script in vmodem.sh ppp.sh sound.py ppp_noise.py vmodem.service; do
         [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
     done
     ((${#missing[@]} == 0)) || fail "Missing project scripts: ${missing[*]}"
@@ -65,13 +65,9 @@ configure_pigpiod() {
 
     if systemctl cat pigpiod.service >/dev/null 2>&1; then
         # Preserve the packaged service, modify only our own drop-in.
-        if [[ ! -f "$OVERRIDE_FILE" ]] || [[ "$(cat "$OVERRIDE_FILE")" != "$config" ]]; then
-            mkdir -p "$(dirname "$OVERRIDE_FILE")"
-            if [[ -f "$OVERRIDE_FILE" ]]; then
-                cp -a "$OVERRIDE_FILE" "$OVERRIDE_FILE.bak.$(date +%Y%m%d%H%M%S)"
-            fi
-            printf '%s\n' "$config" > "$OVERRIDE_FILE"
-            changed=true
+        if [[ ! -f "$PIGPIOD_OVERRIDE_FILE" ]]; then
+            mkdir -p "$(dirname "$PIGPIOD_OVERRIDE_FILE")"
+            printf '%s\n' "$config" > "$PIGPIOD_OVERRIDE_FILE"
         fi
     else
         # Source installations may provide pigpiod without a systemd unit.
@@ -87,19 +83,11 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 UNIT
-        changed=true
     fi
 
-    if [[ "$changed" == true ]]; then
-        systemctl daemon-reload
-    fi
+    systemctl daemon-reload
     systemctl enable pigpiod.service >/dev/null
-
-    if [[ "$changed" == true ]]; then
-        systemctl restart pigpiod.service || fail 'Could not restart pigpiod. Stop any manually started pigpiod first.'
-    else
-        systemctl start pigpiod.service || fail 'Could not start pigpiod. Stop any manually started pigpiod first.'
-    fi
+    systemctl restart pigpiod.service || fail 'Could not restart pigpiod. Stop any manually started pigpiod first.'
 
     # One functional check, rather than repeating systemctl status checks.
     python3 - <<'PY'
@@ -114,11 +102,33 @@ PY
     echo 'pigpiod: OK (automatic startup, -l -m)'
 }
 
+install_vmodem_service() {
+    local unit=/etc/systemd/system/vmodem.service
+
+    if [[ ! -f "$unit" ]] || ! cmp -s "$PROJECT_DIR/vmodem.service" "$unit"; then
+        install -m 0644 "$PROJECT_DIR/vmodem.service" "$unit"
+        systemctl daemon-reload
+        echo 'vmodem.service: installed'
+    else
+        echo 'vmodem.service: unchanged'
+    fi
+
+    if [[ -f /etc/rc.local ]] && grep -Eq '^[[:space:]]*[^#]*vmodem' /etc/rc.local; then
+        echo 'WARNING: /etc/rc.local still references vmodem. Remove the old startup entry.' >&2
+    fi
+
+    systemctl enable --now vmodem.service >/dev/null
+    echo 'vmodem.service: enabled and started'
+}
+
 (($# == 0)) || fail 'Usage: sudo bash setup.sh'
 ((EUID == 0)) || fail 'Run as root: sudo bash setup.sh'
+[[ "$PROJECT_DIR" == /boot/vmodem ]] || \
+    fail 'Install this project in /boot/vmodem (path used by vmodem.service).'
 
 check_scripts
 check_dependencies
 configure_pigpiod
+install_vmodem_service
 
-echo 'Setup complete. The PPP sound cache is managed by vmodem.sh.'
+echo 'Setup complete.'
