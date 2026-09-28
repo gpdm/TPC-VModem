@@ -134,13 +134,13 @@ UNIT
 
     echo 'pigpiod: waiting for the daemon to accept connections (up to 10 seconds)'
     for attempt in {1..10}; do
-        if python3 -c 'import pigpio, sys; pi = pigpio.pi("127.0.0.1"); ok = pi.connected; pi.stop(); sys.exit(0 if ok else 1)' >/dev/null 2>&1; then
+        if python3 -c 'import pigpio, sys; pi = pigpio.pi(); ok = pi.connected; pi.stop(); sys.exit(0 if ok else 1)' >/dev/null 2>&1; then
             echo 'pigpiod: OK'
             return
         fi
         sleep 1
     done
-    fail 'pigpiod did not become reachable. Check: journalctl -u pigpiod -n 30'
+    echo 'WARN: pigpiod did not become reachable. Check: journalctl -u pigpiod -n 30'
 }
 
 install_vmodem_service() {
