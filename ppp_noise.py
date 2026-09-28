@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """Synthetic modem noise from pppd's live record FIFO.
 
-Audio is synthesized ONCE into a small on-disk sound bank. During PPP,
-only cached GPIO pulse lists are passed to pigpio for DMA playback.
+Original Raspberry Pi 1: select precomputed sound blocks from a disk cache.
+Other models: synthesize live audio from incoming PPP traffic.
+Both modes use pigpio DMA playback on GPIO18; the FIFO is always drained.
 
-Prepare once (no pigpio daemon or GPIO needed):
-    python3 ppp_noise.py --prepare
-
-Normal ppp.sh invocation is unchanged:
-    python3 ppp_noise.py /run/tpc-vmodem-ppp-123.fifo
-
-The FIFO is always drained, including after the six-second sound finishes.
+    python3 ppp_noise.py --prepare    # Optional: precompute a cache on any host
+    python3 ppp_noise.py --check      # Cache required only on Raspberry Pi 1
+    python3 ppp_noise.py FIFO [debug]
 """
 
 import gzip
@@ -21,6 +18,7 @@ import queue
 import sys
 import threading
 import time
+from pathlib import Path
 
 try:
     import pigpio
@@ -28,9 +26,24 @@ except ImportError:
     pigpio = None
 
 GPIO_PIN = 18                   # BCM 18, physical pin 12
+
+
+def get_pi_model():
+    try:
+        return Path('/proc/device-tree/model').read_bytes().decode().rstrip('\x00')
+    except OSError:
+        return ''
+
+
+def needs_cache():
+    # Same Raspberry Pi 1 identification as in sound.py.
+    return get_pi_model().startswith('Raspberry Pi Model ')
+
+
 NOISE_SECONDS = 6.0
 SAMPLE_RATE = 20000
-CHUNK_MS = 250                  # 24 short, precomputed chunks per connection
+CHUNK_MS = 250                  # Cached blocks: 24 per connection
+LIVE_CHUNK_MS = 250             # Live blocks; tune only if needed
 LOW_HZ = 380
 MID_HZ = 680
 HIGH_HZ = 1100
@@ -61,40 +74,39 @@ def cache_signature():
             LOW_HZ, MID_HZ, HIGH_HZ, NOISE_SECONDS]
 
 
-def generate_chunk(start_t, tx, rx, seed):
-    """Original synthesizer, evaluated OFFLINE. Store level + run lengths."""
-    last_level = None
-    run_us = 0
+def synthesize_samples(start_t, count, tx, rx, seed, filtered=0.0):
+    """One synthesizer for cached and live modes; return the RNG/filter state."""
+    first_level = last_level = None
     durations = []
-    filtered = 0.0
+    run_us = 0
+    sin = math.sin
+    f1 = LOW_HZ + (tx % 11) * 6
+    f2 = MID_HZ + (rx % 9) * 8
+    f3 = HIGH_HZ + ((tx ^ rx) % 7) * 10
 
-    for n in range(SAMPLES_PER_CHUNK):
+    for n in range(count):
         t = start_t + n / SAMPLE_RATE
-
         if t < 0.18:
-            f1, f2, f3 = 2100, 0, 0
-            a, b, c, hiss = 0.9, 0.0, 0.0, 0.0
+            wave = 0.9 * sin(TWO_PI * 2100 * t)
+            hiss = 0.0
         elif t < 0.65:
-            f1 = 950 + int(700 * (t - 0.18) / 0.47)
-            f2, f3 = 1250, 0
-            a, b, c, hiss = 0.65, 0.3, 0.0, 0.05
+            sweep = 950 + int(700 * (t - 0.18) / 0.47)
+            wave = (0.65 * sin(TWO_PI * sweep * t) +
+                    0.3 * sin(TWO_PI * 1250 * t))
+            hiss = 0.05
         else:
             dark = min(1.0, max(0.0, (t - 1.6) / 1.1))
-            f1 = LOW_HZ + (tx % 11) * 6
-            f2 = MID_HZ + (rx % 9) * 8
-            f3 = HIGH_HZ + ((tx ^ rx) % 7) * 10
-            a = 0.15 + dark * 0.05
-            b = 0.12
-            c = 0.08 - dark * 0.04
+            wave = ((0.15 + dark * 0.05) * sin(TWO_PI * f1 * t) +
+                    0.12 * sin(TWO_PI * f2 * t) +
+                    (0.08 - dark * 0.04) * sin(TWO_PI * f3 * t))
             hiss = 0.65 + dark * 0.15
 
-        wave = (a * math.sin(TWO_PI * f1 * t) +
-                b * math.sin(TWO_PI * f2 * t) +
-                c * math.sin(TWO_PI * f3 * t))
         seed = (1103515245 * seed + 12345) & 0x7fffffff
         raw = ((seed >> 16) / 16384.0) - 1.0
         filtered = 0.91 * filtered + 0.09 * raw
         wave += hiss * filtered
+        if t > NOISE_SECONDS - 0.2:
+            wave *= max(0.0, (NOISE_SECONDS - t) / 0.2)
         level = int(wave > 0.02)
 
         if last_level is None:
@@ -108,8 +120,20 @@ def generate_chunk(start_t, tx, rx, seed):
             run_us = SAMPLE_US
 
     durations.append(run_us)
-    # At playback, levels alternate between these durations.
-    return [first_level, durations]
+    return [first_level, durations], seed, filtered
+
+
+def generate_chunk(start_t, tx, rx, seed):
+    # The existing Pi 1 cache format and independent block noise are unchanged.
+    piece, _, _ = synthesize_samples(start_t, SAMPLES_PER_CHUNK, tx, rx, seed)
+    return piece
+
+
+def generate_live_chunk(first_sample, count, tx, rx, seed, filtered):
+    # Live mode continues noise-filter state and responds to the latest traffic.
+    seed ^= (tx << 1) ^ (rx << 9)
+    return synthesize_samples(first_sample / SAMPLE_RATE, count, tx, rx,
+                              seed, filtered)
 
 
 def prepare_cache():
@@ -223,17 +247,26 @@ class NoisePlayer:
         return tx, rx
 
     def play(self):
-        # IMPORTANT: cache loading and pigpio run in THIS worker thread.
-        # The parent continues draining pppd's FIFO even if these are slow.
-        bank = load_cache()
-        if bank is None:
+        # Disk loading, live synthesis and pigpio operate only in this worker.
+        # The main thread must continue reading the record FIFO regardless.
+        cached = needs_cache()
+        bank = load_cache() if cached else None
+        if cached and bank is None:
             return
+        if self.debug:
+            print('ppp_noise.py: ' + ('cached (Pi 1)' if cached else 'live') +
+                  ' audio', file=sys.stderr)
 
         pi = None
         previous_id = None
         tx, rx = 61, 113
+        seed, filtered = 12345, 0.0
+        sample_number = 0
+        frame_ms = CHUNK_MS if cached else LIVE_CHUNK_MS
+        count = SAMPLE_RATE * frame_ms // 1000
+        frame_count = (int(SAMPLE_RATE * NOISE_SECONDS) + count - 1) // count
         try:
-            pi = pigpio.pi()
+            pi = pigpio.pi()  # Same address selection as sound.py.
             if not pi.connected:
                 raise RuntimeError('cannot connect to pigpiod (try: sudo pigpiod)')
             pi.set_mode(GPIO_PIN, pigpio.OUTPUT)
@@ -243,48 +276,51 @@ class NoisePlayer:
             while not self.stop.is_set() and self.started is None:
                 time.sleep(0.01)
 
-            # Wave chunks have already been synthesized. Only one queued
-            # waveform is kept in addition to the currently playing one.
-            for frame in range(FRAME_COUNT):
+            for frame in range(frame_count):
                 if self.stop.is_set():
                     break
                 tx, rx = self.recent_traffic(tx, rx)
-                if frame < 3:
-                    key = f'intro{frame}'
+                if cached:
+                    if frame < 3:
+                        key = f'intro{frame}'
+                    else:
+                        phase = 'early' if frame * CHUNK_MS < 2700 else 'late'
+                        key = f'{phase}_{min(tx // 64, 3)}_{min(rx // 86, 2)}'
+                    piece = bank[key]
                 else:
-                    phase = 'early' if frame * CHUNK_MS < 2700 else 'late'
-                    key = f'{phase}_{min(tx // 64, 3)}_{min(rx // 86, 2)}'
+                    remaining = int(SAMPLE_RATE * NOISE_SECONDS) - sample_number
+                    started = time.monotonic()
+                    piece, seed, filtered = generate_live_chunk(
+                        sample_number, min(count, remaining), tx, rx, seed, filtered)
+                    if self.debug:
+                        print(f'ppp_noise.py: synthesized {frame_ms} ms in '
+                              f'{(time.monotonic() - started)*1000:.0f} ms',
+                              file=sys.stderr)
+                    sample_number += min(count, remaining)
 
-                # Disk and synthesis do NOT occur inside this loop.
-                pulses = build_gpio_pulses(bank[key])
                 pi.wave_add_new()
-                pi.wave_add_generic(pulses)
+                pi.wave_add_generic(build_gpio_pulses(piece))
                 wave_id = pi.wave_create_and_pad(50)
                 if wave_id < 0:
                     raise RuntimeError(f'pigpio cannot allocate wave: {wave_id}')
 
-                if previous_id is None:
+                if previous_id is None or not pi.wave_tx_busy():
+                    if previous_id is not None and self.debug:
+                        print('ppp_noise.py: audio underrun', file=sys.stderr)
                     pi.wave_send_once(wave_id)
                 else:
-                    if self.debug and not pi.wave_tx_busy():
-                        print('ppp_noise.py: audio underrun', file=sys.stderr)
-                    # pigpio synchronizes the new wave with the previous one.
                     pi.wave_send_using_mode(wave_id,
-                                           pigpio.WAVE_MODE_ONE_SHOT_SYNC)
-                    # Deleting the preceding wave before switchover corrupts
-                    # DMA playback. Wait for the new wave to become active.
+                                            pigpio.WAVE_MODE_ONE_SHOT_SYNC)
+                    # Do not delete a wave while DMA is still using it.
                     while not self.stop.is_set():
                         active = pi.wave_tx_at()
-                        if active == wave_id:
-                            break
-                        if active == pigpio.NO_TX_WAVE:
-                            # This can occur after a genuine underrun.
+                        if active in (wave_id, pigpio.NO_TX_WAVE):
                             break
                         time.sleep(0.004)
                     if self.stop.is_set():
                         break
+                if previous_id is not None:
                     pi.wave_delete(previous_id)
-
                 previous_id = wave_id
 
             if not self.stop.is_set():
@@ -383,7 +419,8 @@ def main():
             return 1
         return 0
     if len(sys.argv) == 2 and sys.argv[1] == '--check':
-        return 0 if load_cache(report_errors=False) is not None else 1
+        # Live synthesis does not need a disk cache.
+        return 0 if not needs_cache() or load_cache(report_errors=False) is not None else 1
     if len(sys.argv) not in (2, 3):
         print('Usage: ppp_noise.py --prepare | --check | FIFO [debug]', file=sys.stderr)
         return 1
