@@ -105,11 +105,19 @@ TERM="vt100"
 # The helper is optional. If it is missing or fails, modem operation
 # continues without sound.
 soundhelper="./sound.py"
+noisehelper="./ppp_noise.py"
+noisecache="ppp_noise_cache_v1.json.gz"
 
 # Hayes speaker mode. Default is M1.
 speaker_mode=1
 # Dialtone is only heard briefly after ATD, not while idle.
 dialtone_time=1
+
+# check if audio cache exists, otherwise create it
+if [ ! -f "${noisecache}" ]; then
+	[ -f "${noisehelper}" ] && python3 ${noisehelper} --prepare
+fi
+
 
 # EXPORT SHELL VARS
 # -----------------
@@ -117,6 +125,7 @@ export serport
 export baud
 export etherp
 export TERM
+
 
 # FUNCTIONS
 # ---------
@@ -168,11 +177,11 @@ start_dialtone () {
     return
   fi
 
-  if [[ ! -f "$soundhelper" ]]; then
+  if [[ ! -f "${soundhelper}" ]]; then
     return
   fi
 
-  python3 ./sound.py dialtone ${dialtone_time}
+  python3 "${soundhelper}" dialtone "${dialtone_time}"
 }
 
 
@@ -184,11 +193,11 @@ start_dtmf () {
     return
   fi
 
-  if [[ ! -f "$soundhelper" ]]; then
+  if [[ ! -f "${soundhelper}" ]]; then
     return
   fi
 
-  python3 "$soundhelper" dtmf "$digits"
+  python3 "${soundhelper}" dtmf "$digits"
 }
 
 export -f sendtty
