@@ -113,9 +113,11 @@ speaker_mode=1
 # Dialtone is only heard briefly after ATD, not while idle.
 dialtone_time=1
 
-# check if audio cache exists, otherwise create it
-if [ ! -f "${noisecache}" ]; then
-	[ -f "${noisehelper}" ] && python3 ${noisehelper} --prepare
+# Only Raspberry Pi 1 needs a cache. Other models synthesize live.
+# ppp_noise.py --check handles the model detection and cache validation.
+if [[ -f "$noisehelper" ]] && ! python3 "$noisehelper" --check; then
+    python3 "$noisehelper" --prepare || \
+        echo 'WARNING: PPP noise cache could not be prepared.' >&2
 fi
 
 
