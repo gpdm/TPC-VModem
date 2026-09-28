@@ -5,8 +5,8 @@ After=network.target pigpiod.service
 
 [Service]
 Type=simple
-WorkingDirectory=/boot/vmodem
-ExecStart=/bin/bash /boot/vmodem/vmodem.sh
+WorkingDirectory=/opt/vmodem
+ExecStart=/bin/bash /opt/vmodem/vmodem.sh
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

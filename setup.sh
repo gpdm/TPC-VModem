@@ -1,21 +1,59 @@
 #!/usr/bin/env bash
 # TPC VModem setup, Raspberry Pi OS with systemd.
-# Run alongside vmodem.sh, ppp.sh, sound.py and ppp_noise.py.
+# Installs in /opt/vmodem, downloads missing files, and configures dependencies.
 
 set -euo pipefail
 
-PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR=/opt/vmodem
+SOURCE_SCRIPT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+GITHUB_RAW=https://raw.githubusercontent.com/gpdm/TPC-VModem/main
 PIGPIOD_OVERRIDE_FILE=/etc/systemd/system/pigpiod.service.d/zz-tpc-vmodem.conf
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+move_setup() {
+    mkdir -p "$PROJECT_DIR"
+    if [[ "$SOURCE_SCRIPT" != "$PROJECT_DIR/setup.sh" ]]; then
+        mv -f -- "$SOURCE_SCRIPT" "$PROJECT_DIR/setup.sh" || fail 'Could not move setup.sh.'
+        echo "Moved setup.sh to $PROJECT_DIR"
+    fi
+    cd -- "$PROJECT_DIR"
+}
+
+download_scripts() {
+    local script tmp
+
+    # Only needed for a fresh or incomplete installation.
+    if ! command -v curl >/dev/null 2>&1; then
+        command -v apt-get >/dev/null 2>&1 || fail 'apt-get is required to install curl.'
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y curl || fail 'Could not install curl.'
+    fi
+
+    for script in "$@"; do
+        echo "Downloading $script"
+        tmp="$(mktemp "$PROJECT_DIR/.${script}.XXXXXX")"
+        if ! curl -fLsS --retry 2 "$GITHUB_RAW/$script" -o "$tmp" || [[ ! -s "$tmp" ]]; then
+            rm -f -- "$tmp"
+            fail "Could not download $script from $GITHUB_RAW"
+        fi
+        mv -- "$tmp" "$PROJECT_DIR/$script"
+    done
+}
 
 check_scripts() {
     local missing=() script
     for script in vmodem.sh ppp.sh sound.py ppp_noise.py vmodem.service; do
         [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
     done
-    ((${#missing[@]} == 0)) || fail "Missing project scripts: ${missing[*]}"
-    echo 'Project scripts: OK'
+    if ((${#missing[@]})); then
+        download_scripts "${missing[@]}"
+    fi
+    # Apply permissions to both existing and newly downloaded scripts.
+    for script in "$PROJECT_DIR"/*.sh "$PROJECT_DIR"/*.py; do
+        [[ -f "$script" ]] && chmod 755 -- "$script"
+    done
+    echo 'Project scripts: OK (mode 755)'
 }
 
 check_dependencies() {
@@ -104,14 +142,27 @@ PY
 
 install_vmodem_service() {
     local unit=/etc/systemd/system/vmodem.service
+    local temp
+    temp="$(mktemp)"
 
-    if [[ ! -f "$unit" ]] || ! cmp -s "$PROJECT_DIR/vmodem.service" "$unit"; then
-        install -m 0644 "$PROJECT_DIR/vmodem.service" "$unit"
+    # Accept either the old /boot unit or a newer /opt unit from GitHub.
+    sed 's|/boot/vmodem|/opt/vmodem|g' "$PROJECT_DIR/vmodem.service" > "$temp"
+    if ! grep -Fqx "WorkingDirectory=$PROJECT_DIR" "$temp" || \
+       ! grep -Fqx "ExecStart=/bin/bash $PROJECT_DIR/vmodem.sh" "$temp"; then
+        rm -f -- "$temp"
+        fail 'vmodem.service has unexpected paths. Expected /opt/vmodem.'
+    fi
+
+    if [[ ! -f "$unit" ]] || ! cmp -s "$temp" "$unit"; then
+        install -m 0644 "$temp" "$unit"
         systemctl daemon-reload
+        # Restart only if an older systemd instance is already running.
+        systemctl try-restart vmodem.service
         echo 'vmodem.service: installed'
     else
         echo 'vmodem.service: unchanged'
     fi
+    rm -f -- "$temp"
 
     if [[ -f /etc/rc.local ]] && grep -Eq '^[[:space:]]*[^#]*vmodem' /etc/rc.local; then
         echo 'WARNING: /etc/rc.local still references vmodem. Remove the old startup entry.' >&2
@@ -123,8 +174,7 @@ install_vmodem_service() {
 
 (($# == 0)) || fail 'Usage: sudo bash setup.sh'
 ((EUID == 0)) || fail 'Run as root: sudo bash setup.sh'
-[[ "$PROJECT_DIR" == /boot/vmodem ]] || \
-    fail 'Install this project in /boot/vmodem (path used by vmodem.service).'
+move_setup
 
 check_scripts
 check_dependencies
