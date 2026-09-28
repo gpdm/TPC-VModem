@@ -26,7 +26,7 @@ The sound effects are generated directly through Raspberry Pi GPIO. No sound car
                     |  Hayes emulator  |
                     +---------+--------+
                               |
-                    ATD command received
+                         ATD command
                               |
                  +------------+-----------+
                  |                        |
@@ -38,39 +38,42 @@ The sound effects are generated directly through Raspberry Pi GPIO. No sound car
            | DTMF       |         | or ppp.sh      |
            +------+-----+         +-------+--------+
                   |                       |
-                  |                 PPP connection
-                  |                       |
                   |                       v
                   |               +----------------+
                   |               |     ppp.sh     |
                   |               |                |
+                  |               | Create FIFO    |
                   |               | Start reader   |
-                  |               | Start pppd     |
+                  |               | Run pppd       |
                   |               +-------+--------+
                   |                       |
                   |                       v
                   |                 pppd record
                   |                       |
                   |                       v
-                  |                 +-----------+
-                  |                 | Record    |
-                  |                 | FIFO      |
-                  |                 +-----+-----+
+                  |               +----------------+
+                  |               |  Record FIFO   |
+                  |               +-------+--------+
                   |                       |
                   |                       v
                   |               +----------------+
-                  |               | ppp_noise.py   |
+                  |               |  ppp_noise.py  |
                   |               |                |
                   |               | Read PPP data  |
-                  |               | Select cached  |
-                  |               | sound blocks   |
+                  |               | Detect Pi model|
                   |               +-------+--------+
                   |                       |
-                  |                       v
-                  |               +----------------+
-                  |               | Precomputed    |
-                  |               | sound cache    |
-                  |               +-------+--------+
+                  |             +---------+---------+
+                  |             |                   |
+                  |             v                   v
+                  |       +------------+     +------------+
+                  |       | Pi 1       |     | Other Pis  |
+                  |       |            |     |            |
+                  |       | Precomputed|     | Live audio |
+                  |       | sound cache|     | synthesis  |
+                  |       +------+-----+     +-----+------+
+                  |              |                 |
+                  |              +--------+--------+
                   |                       |
                   +-----------+-----------+
                               |
@@ -89,16 +92,37 @@ The sound effects are generated directly through Raspberry Pi GPIO. No sound car
                            Speaker
 ```
 
-Dial tone and DTMF are controlled directly by `vmodem.sh`.
 
-Once a call is handed over to PPP, `vmodem.sh` waits for `ppp.sh` to return. The PPP connection noise is therefore generated asynchronously from inside `ppp.sh`.
+Dial tone and DTMF are controlled directly by `vmodem.sh` and generated through `sound.py, using hardware PWM and DMA.
 
-`pppd` writes its live record stream into a FIFO. A background reader continuously drains that FIFO and uses the first few seconds of PPP traffic as input for dynamically generated GPIO sound. After the sound period ends, the reader continues draining the FIFO without generating audio, so `pppd` can never be blocked by the sound subsystem.
+Once a call is handed over to PPP, `vmodem.sh` waits for `ppp.sh` to return. The PPP connection noise is generated asynchronously by `ppp_noise.py`, which is launched by `ppp.sh.
+
+pppd writes its live record stream into a FIFO, which is continuously read by `ppp_noise.py`.
+Depending on the Raspberry Pi model, sound is either generated from precomputed audio blocks (Raspberry Pi 1) or synthesized live (other models).
+In both cases, actual PPP traffic influences the generated sound, which is played through pigpio using DMA.
+
+After the six second sound period ends, the reader continues draining the FIFO for the remainder of the PPP session, preventing the audio processing from unnecessarily interfering with the connection.
+
+## Changes From Original VModem
+
+* `vmodem.sh` extended to emit dial tone and DTMF sequences
+* `ppp.sh` extended to emit some "noise" (no, it's not a modem-accurate noise reproduction, but at least on Raspberry Pi 2 or better it's sampled from live serial transmission data)
+* `setup.sh` script
+* systemd service integration
+
+## Wiring Diagram for Speaker via GPIO
+
+TPC-VModem does not require sound hardware.
+All audio is emitted through a simple speaker connected to GPIO.
+
+Some soldering is required. Schematics below.
+
+<TBD>
 
 
 ## Installation
 
-TPC-VModem provides a setup script, which does the heavy lifting for you:
+As noted, TPC-VModem provides a setup script which does the heavy lifting for you:
 
 ```
 cd /tmp
@@ -111,12 +135,6 @@ bash setup.sh
 * checks and install required dependencies
 * reconfigures pigpiod to disable polling (reduces load on original Raspberry Pi 1)
 * registers vmodem with systemd
-
-
-## Wiring Diagram for Speaker via GPIO
-
-<TBD>
-
 
 ## Acknowledgements
 
