@@ -112,12 +112,67 @@ After the six second sound period ends, the reader continues draining the FIFO f
 
 ## Wiring Diagram for Speaker via GPIO
 
-TPC-VModem does not require sound hardware.
 All audio is emitted through a simple speaker connected to GPIO.
+No extra hardware like an audio hat is required.
 
-Some soldering is required. Schematics below.
+But you must do some soldering. Schematics below.
+I'm lazy, so it's just some cheap ASCII art, sorry!
 
-<TBD>
+```text
+Raspberry Pi GPIO Pins:
+
+Pin  2: +5V
+Pin  6: GND
+Pin 12: GPIO 18
+
+
+                   +5V (Pin 2)
+                        |
+                   [ R 47ohm ]
+                        |
+               +--------+--------+
+               |                 |
+               |              Cathode
+               |               (Ring)
+               |                 |
+            Speaker           1N4148
+            8R / 0.5W            |
+               |               Anode
+               |                 |
+               +--------+--------+
+                        |
+                        C
+                     +-----+
+                     |     |
+GPIO 18 --[ R 1K ]---| B   | 2N5551
+(Pin 12)             |     |
+                     +-----+
+                        E
+                        |
+                   GND (Pin 6)
+```
+
+
+An optional 47 kOhm pull-down resistor between the transistor's
+`base` and `emitter` helps keep the speaker silent while GPIO18
+is not yet configured, particularly during system startup.
+
+It's not strictly required, but if you hear some clicking noise,
+this may help.
+
+```text
+ GPIO18 (Pin 12)
+       |
+      [1k]
+       |
+       +------------ B
+       |             |
+     [47k]         2N5551
+       |             |
+       +------------ E
+       |
+      GND
+```
 
 
 ## Installation
