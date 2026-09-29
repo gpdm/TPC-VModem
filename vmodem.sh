@@ -185,7 +185,7 @@ readtty () {
 
 
 emit_sound () {
-    [[ "$speaker_mode" == 1 || "$speaker_mode" == 2 ]] || return 0
+    [[ "$speaker_mode" == 0 ]] && return 0
     [[ -f "$soundhelper" ]] || return 0
 
     case "$1" in
@@ -193,8 +193,9 @@ emit_sound () {
         dtmf)     set -- dtmf "$2" ;;
         ringback) set -- ringback "$ringback_cycles" "$ringback_pause" ;;
         v34)
+    		[[ "$speaker_mode" == 3 ]] && return 0
     		python3 "$soundhelper" v34 &
-		sleep 13
+		sleep 9
 		return
 		;;
         *) return 1 ;;
