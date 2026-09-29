@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 #
-# TPC-VModem - Synthetic modem connection audio
-#
-# Generates modem connection sounds from live PPP traffic.
-# Supports cached synthesis on Raspberry Pi 1 and live synthesis
-# on newer models.
+# TPC-VModem - V.34-inspired PPP data-phase audio
 #
 # Developed for TPC-VModem:
 #   Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
@@ -15,10 +11,21 @@
 # License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
 # https://creativecommons.org/licenses/by-nc-sa/4.0/
 #
-# Usage:
-#    python3 ppp_noise.py --prepare    # Optional: precompute a cache on any host
-#    python3 ppp_noise.py --check      # Cache required only on Raspberry Pi 1
-#    python3 ppp_noise.py FIFO [debug]
+"""V.34-inspired PPP data-phase sound from pppd's live record FIFO.
+
+A continuously scrambled 16-QAM-like signal replaces the earlier switching
+pitches and handshake noises. This is an acoustic approximation, not a
+standards-compliant V.34 modem or an analog telephone-line emulator.
+
+Raspberry Pi 1: use precomputed idle/traffic sound blocks from a disk cache.
+Other models: synthesize live audio; actual PPP data affects the scrambler.
+ATM1 plays six seconds. ATM2 stays audible during PPP on Pi 2+, but is
+limited to six seconds on Pi 1. The FIFO is drained for the entire session.
+
+    python3 ppp_noise.py --prepare    # Optional: precompute a cache on any host
+    python3 ppp_noise.py --check      # Cache required only on Raspberry Pi 1
+    python3 ppp_noise.py FIFO [debug]
+"""
 
 import gzip
 import json
@@ -54,22 +61,21 @@ def needs_cache():
 NOISE_SECONDS = 6.0
 SAMPLE_RATE = 20000
 CHUNK_MS = 250                  # Cached blocks: 24 per connection
-LIVE_CHUNK_MS = 250             # Live blocks; tune only if needed
-LOW_HZ = 380
-MID_HZ = 680
-HIGH_HZ = 1100
+LIVE_CHUNK_MS = 250             # Same timing for live synthesis
+CARRIER_HZ = 1920              # V.34-inspired answer-side carrier
+SYMBOL_RATE = 2400             # Plausible V.34 symbol rate
+SHAPING = 0.22                 # Simple I/Q pulse smoothing (not a true RRC)
+FADE_SECONDS = 0.10
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          'ppp_noise_cache_v1.json.gz')
+                          'ppp_noise_cache_v2.json.gz')
 EVENT_QUEUE_SIZE = 32
 GPIO_MASK = 1 << GPIO_PIN
 TWO_PI = 2.0 * math.pi
 FRAME_COUNT = int(round(NOISE_SECONDS * 1000 / CHUNK_MS))
 SAMPLES_PER_CHUNK = SAMPLE_RATE * CHUNK_MS // 1000
 SAMPLE_US = 1000000 // SAMPLE_RATE
-TX_LEVELS = (32, 96, 160, 224)
-RX_LEVELS = (40, 128, 216)
 
 TAG_SENT = 1
 TAG_RECEIVED = 2
@@ -81,93 +87,109 @@ TAG_START = 7
 
 
 def cache_signature():
-    return [CACHE_VERSION, SAMPLE_RATE, CHUNK_MS,
-            LOW_HZ, MID_HZ, HIGH_HZ, NOISE_SECONDS]
+    return [CACHE_VERSION, SAMPLE_RATE, CHUNK_MS, CARRIER_HZ,
+            SYMBOL_RATE, SHAPING, NOISE_SECONDS]
 
 
-def synthesize_samples(start_t, count, tx, rx, seed, filtered=0.0, fade_out=True):
-    """One synthesizer for cached and live modes; return the RNG/filter state."""
-    first_level = last_level = None
-    durations = []
-    run_us = 0
-    sin = math.sin
-    f1 = LOW_HZ + (tx % 11) * 6
-    f2 = MID_HZ + (rx % 9) * 8
-    f3 = HIGH_HZ + ((tx ^ rx) % 7) * 10
+class QamSynth:
+    """Continuous pseudo-scrambled, pulse-shaped passband data signal.
 
-    for n in range(count):
-        t = start_t + n / SAMPLE_RATE
-        if t < 0.18:
-            wave = 0.9 * sin(TWO_PI * 2100 * t)
-            hiss = 0.0
-        elif t < 0.65:
-            sweep = 950 + int(700 * (t - 0.18) / 0.47)
-            wave = (0.65 * sin(TWO_PI * sweep * t) +
-                    0.3 * sin(TWO_PI * 1250 * t))
-            hiss = 0.05
-        else:
-            dark = min(1.0, max(0.0, (t - 1.6) / 1.1))
-            wave = ((0.15 + dark * 0.05) * sin(TWO_PI * f1 * t) +
-                    0.12 * sin(TWO_PI * f2 * t) +
-                    (0.08 - dark * 0.04) * sin(TWO_PI * f3 * t))
-            hiss = 0.65 + dark * 0.15
+    The symbol stream runs even when PPP is idle, as a real modem's data
+    carrier would. Actual PPP traffic perturbs future symbols, NOT the carrier
+    frequency or loudness. A one-bit sign output suits the GPIO speaker;
+    no NumPy or SciPy is required at runtime.
+    """
 
-        seed = (1103515245 * seed + 12345) & 0x7fffffff
-        raw = ((seed >> 16) / 16384.0) - 1.0
-        filtered = 0.91 * filtered + 0.09 * raw
-        wave += hiss * filtered
-        if fade_out and t > NOISE_SECONDS - 0.2:
-            wave *= max(0.0, (NOISE_SECONDS - t) / 0.2)
-        level = int(wave > 0.02)
+    def __init__(self, seed=0x5A3217):
+        self.register = seed & 0x7fffff or 1
+        self.symbol_clock = SAMPLE_RATE  # Generate the first symbol immediately.
+        self.target_i = self.target_q = 0.0
+        self.shaped_i = self.shaped_q = 0.0
+        self.carrier_cos = 1.0
+        self.carrier_sin = 0.0
+        self.samples = 0
 
-        if last_level is None:
-            first_level = last_level = level
-            run_us = SAMPLE_US
-        elif level == last_level:
-            run_us += SAMPLE_US
-        else:
+    def render(self, count, influence=0, fade_out=False):
+        # Only the pseudo-random symbol sequence reacts to the PPP bytes.
+        register = (self.register ^ (influence & 0x7fffff)) or 1
+        clock = self.symbol_clock
+        target_i, target_q = self.target_i, self.target_q
+        shaped_i, shaped_q = self.shaped_i, self.shaped_q
+        carrier_cos, carrier_sin = self.carrier_cos, self.carrier_sin
+        step_cos = math.cos(TWO_PI * CARRIER_HZ / SAMPLE_RATE)
+        step_sin = math.sin(TWO_PI * CARRIER_HZ / SAMPLE_RATE)
+        start_sample = self.samples
+        fade_start = int((NOISE_SECONDS - FADE_SECONDS) * SAMPLE_RATE)
+        fade_end = int(NOISE_SECONDS * SAMPLE_RATE)
+        first_level = last_level = None
+        durations = []
+        run_us = 0
+
+        for n in range(count):
+            if clock >= SAMPLE_RATE:
+                clock -= SAMPLE_RATE
+                # 23-bit pseudo-random shift register, inspired by a modem
+                # scrambler. It is deliberately NOT a full V.34 encoder.
+                bits = 0
+                for bit in range(4):
+                    feedback = ((register >> 22) ^ (register >> 17)) & 1
+                    register = ((register << 1) | feedback) & 0x7fffff
+                    bits |= feedback << bit
+                # 16-QAM-like constellation. No tones are changed by traffic.
+                target_i = (-3.0, -1.0, 3.0, 1.0)[bits & 3]
+                target_q = (-3.0, -1.0, 3.0, 1.0)[bits >> 2]
+            clock += SYMBOL_RATE
+            shaped_i += SHAPING * (target_i - shaped_i)
+            shaped_q += SHAPING * (target_q - shaped_q)
+            wave = shaped_i * carrier_cos - shaped_q * carrier_sin
+
+            # In one-bit output, an increasing threshold gives a short fade
+            # rather than incorrectly multiplying a waveform before sign().
+            threshold = 0.0
+            if fade_out and start_sample + n >= fade_start:
+                threshold = 5.0 * min(1.0,
+                    (start_sample + n - fade_start) / (fade_end - fade_start))
+            level = int(wave > threshold)
+
+            if last_level is None:
+                first_level = last_level = level
+                run_us = SAMPLE_US
+            elif level == last_level:
+                run_us += SAMPLE_US
+            else:
+                durations.append(run_us)
+                last_level = level
+                run_us = SAMPLE_US
+
+            # Recursive oscillator avoids costly sine calls per audio sample.
+            carrier_cos, carrier_sin = (
+                carrier_cos * step_cos - carrier_sin * step_sin,
+                carrier_sin * step_cos + carrier_cos * step_sin)
+
+        if run_us:
             durations.append(run_us)
-            last_level = level
-            run_us = SAMPLE_US
-
-    durations.append(run_us)
-    return [first_level, durations], seed, filtered
-
-
-def generate_chunk(start_t, tx, rx, seed):
-    # The existing Pi 1 cache format and independent block noise are unchanged.
-    piece, _, _ = synthesize_samples(start_t, SAMPLES_PER_CHUNK, tx, rx, seed)
-    return piece
-
-
-def generate_live_chunk(first_sample, count, tx, rx, seed, filtered, continuous=False):
-    # Live mode continues noise-filter state and responds to the latest traffic.
-    seed ^= (tx << 1) ^ (rx << 9)
-    return synthesize_samples(first_sample / SAMPLE_RATE, count, tx, rx,
-                              seed, filtered, fade_out=not continuous)
+        self.register = register
+        self.symbol_clock = clock
+        self.target_i, self.target_q = target_i, target_q
+        self.shaped_i, self.shaped_q = shaped_i, shaped_q
+        # Keep the oscillator numerically stable for long ATM2 sessions.
+        norm = math.hypot(carrier_cos, carrier_sin)
+        self.carrier_cos, self.carrier_sin = carrier_cos / norm, carrier_sin / norm
+        self.samples += count
+        return [first_level, durations]
 
 
 def prepare_cache():
-    """One-time generation, showing progress even on a slow Pi 1."""
-    total = 3 + 2 * len(TX_LEVELS) * len(RX_LEVELS)
+    """Prepare two six-second Pi 1 tracks: idle and traffic-active."""
     bank = {}
-    print(f'Preparing {total} PPP noise sound blocks...', flush=True)
-
-    def add_block(key, start_t, tx, rx, seed):
-        bank[key] = generate_chunk(start_t, tx, rx, seed)
-        print(f'  [{len(bank):02d}/{total}] {key}', flush=True)
-
-    for frame in range(3):
-        add_block(f'intro{frame}', frame * CHUNK_MS / 1000.0,
-                  61, 113, 12345 + frame * 7919)
-
-    # 12 data-driven variants, each with early and late tonal balance.
-    for phase, start_t in (('early', 1.0), ('late', 3.5)):
-        for tx_index, tx in enumerate(TX_LEVELS):
-            for rx_index, rx in enumerate(RX_LEVELS):
-                key = f'{phase}_{tx_index}_{rx_index}'
-                seed = 12345 + tx * 101 + rx * 137
-                add_block(key, start_t, tx, rx, seed)
+    print(f'Preparing {FRAME_COUNT * 2} V.34-inspired sound blocks...', flush=True)
+    for mode, seed in (('idle', 0x5A3217), ('traffic', 0x3E19AB)):
+        synth = QamSynth(seed)
+        for frame in range(FRAME_COUNT):
+            # Each bank is a coherent six-second stream: no 250ms sound loop.
+            bank[f'{mode}_{frame}'] = synth.render(
+                SAMPLES_PER_CHUNK, fade_out=(frame == FRAME_COUNT - 1))
+            print(f'  [{len(bank):02d}/{FRAME_COUNT * 2}] {mode}_{frame}', flush=True)
 
     print('Compressing and saving sound cache...', flush=True)
     output = {'signature': cache_signature(), 'bank': bank}
@@ -189,7 +211,9 @@ def load_cache(report_errors=True):
         if payload.get('signature') != cache_signature():
             raise ValueError('cache settings changed')
         bank = payload['bank']
-        if len(bank) != 27:
+        if len(bank) != FRAME_COUNT * 2 or any(
+                f'{mode}_{frame}' not in bank
+                for mode in ('idle', 'traffic') for frame in range(FRAME_COUNT)):
             raise ValueError('sound bank incomplete')
         return bank
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -248,16 +272,18 @@ class NoisePlayer:
             pass
 
     def recent_traffic(self, tx, rx):
+        active = False
         while True:
             try:
                 direction, value = self.events.get_nowait()
             except queue.Empty:
                 break
+            active = True
             if direction == 'TX':
                 tx = value
             else:
                 rx = value
-        return tx, rx
+        return tx, rx, active
 
     def play(self):
         # Disk loading, live synthesis and pigpio operate only in this worker.
@@ -273,7 +299,7 @@ class NoisePlayer:
         pi = None
         previous_id = None
         tx, rx = 61, 113
-        seed, filtered = 12345, 0.0
+        synth = QamSynth() if not self.cached else None
         sample_number = 0
         frame_ms = CHUNK_MS if self.cached else LIVE_CHUNK_MS
         count = SAMPLE_RATE * frame_ms // 1000
@@ -291,21 +317,18 @@ class NoisePlayer:
 
             frame = 0
             while not self.stop.is_set() and (self.continuous or frame < frame_count):
-                tx, rx = self.recent_traffic(tx, rx)
+                tx, rx, active = self.recent_traffic(tx, rx)
                 if self.cached:
-                    if frame < 3:
-                        key = f'intro{frame}'
-                    else:
-                        phase = 'early' if frame * CHUNK_MS < 2700 else 'late'
-                        key = f'{phase}_{min(tx // 64, 3)}_{min(rx // 86, 2)}'
-                    piece = bank[key]
+                    # Pi 1's cached alternatives have the same broad texture.
+                    # Traffic affects block selection, never pitch or volume.
+                    piece = bank[f'{"traffic" if active else "idle"}_{frame}']
                 else:
                     chunk = (count if self.continuous else
                              min(count, int(SAMPLE_RATE * NOISE_SECONDS) - sample_number))
                     started = time.monotonic()
-                    piece, seed, filtered = generate_live_chunk(
-                        sample_number, chunk, tx, rx, seed, filtered,
-                        continuous=self.continuous)
+                    fingerprint = ((tx << 9) ^ (rx << 1) ^ (tx * 257)) if active else 0
+                    piece = synth.render(chunk, influence=fingerprint,
+                                         fade_out=not self.continuous)
                     if self.debug:
                         print(f'ppp_noise.py: synthesized {chunk * 1000 // SAMPLE_RATE} ms in '
                               f'{(time.monotonic() - started)*1000:.0f} ms',
