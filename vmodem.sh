@@ -115,8 +115,13 @@ noisecache="ppp_noise_cache_v1.json.gz"
 
 # Hayes speaker mode. Default is M1.
 speaker_mode=1
+
 # Dialtone is only heard briefly after ATD, not while idle.
 dialtone_time=1
+
+# number of ringbacks and pauses
+ringback_cycles=2
+ringback_pause=3
 
 # Only Raspberry Pi 1 needs a cache. Other models synthesize live.
 # ppp_noise.py --check handles the model detection and cache validation.
@@ -178,7 +183,12 @@ readtty () {
 # GPIO SOUND
 # ----------
 
-start_dialtone () {
+
+emit_sound () {
+  local soundtype="$1"
+  local digits="$2"
+  local params=""
+
   # M0 is silent. M3 is silent during dialing.
   if [[ "$speaker_mode" == "0" || "$speaker_mode" == "3" ]]; then
     return
@@ -188,23 +198,18 @@ start_dialtone () {
     return
   fi
 
-  python3 "${soundhelper}" dialtone "${dialtone_time}"
-}
-
-
-start_dtmf () {
-  local digits="$1"
-
-  # M0 is always silent. M3 is silent while dialing.
-  if [[ "$speaker_mode" == "0" || "$speaker_mode" == "3" ]]; then
-    return
-  fi
-
-  if [[ ! -f "${soundhelper}" ]]; then
-    return
-  fi
-
-  python3 "${soundhelper}" dtmf "$digits"
+  case "${soundtype}" in
+      "dialtone")
+	      params=${dialtone_time}
+	      ;;
+      "ringback")
+	      params=${ringback_cycles} ${ringback_pause}
+	      ;;
+      "dtmf")
+	      params=${digits}
+	      ;;
+  esac
+  python3 "${soundhelper}" "${soundtype}" "${params}"
 }
 
 export -f sendtty
@@ -474,11 +479,11 @@ while [ "$continue" != "1" ]; do
       # ATD Dial number
       if [[ ! -z "$number" ]]; then
         # Dialtone starts when ATD arrives, then gives way to DTMF.
-        start_dialtone
-        start_dtmf "$number"
+        emit_sound dialtone
+        emit_sound dtmf "$number"
 
         if [[ $resultverbose == 1 ]]; then sendtty "RINGING\n"; fi
-        sleep 1
+	emit_sound ringback
 
         # A number-specific script wins. Everything else is handled
         # by the default PPP service.
