@@ -49,7 +49,7 @@
 #
 
 # Script version
-vmodver=1.7.1
+vmodver=1.7.2
 
 # CONFIGURATION
 # -----------------------
