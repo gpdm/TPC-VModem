@@ -107,7 +107,7 @@ And yes, *ATM* commands are honored.
 
 ## Changes From Original VModem
 
-* `vmodem.sh` extended to emit dial tone and DTMF sequences
+* `vmodem.sh` extended to emit dial tone and DTMF sequences and an accurate V.34 handshake
 * `ppp.sh` extended to emit some "noise" (no, it's not a modem-accurate noise reproduction, but at least on Raspberry Pi 2 or better it's sampled from live serial transmission data)
 * `vmodem.sh` changed for convenience to always call up `ppp.sh` if no specifc dialer script exists.
 * `setup.sh` script
