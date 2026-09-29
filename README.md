@@ -103,6 +103,8 @@ In both cases, actual PPP traffic influences the generated sound, which is playe
 
 After the six second sound period ends, the reader continues draining the FIFO for the remainder of the PPP session, preventing the audio processing from unnecessarily interfering with the connection.
 
+And yes, *ATM* commands are honored.
+
 ## Changes From Original VModem
 
 * `vmodem.sh` extended to emit dial tone and DTMF sequences
