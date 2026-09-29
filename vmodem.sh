@@ -185,31 +185,17 @@ readtty () {
 
 
 emit_sound () {
-  local soundtype="$1"
-  local digits="$2"
-  local params=""
+    [[ "$speaker_mode" == 1 || "$speaker_mode" == 2 ]] || return 0
+    [[ -f "$soundhelper" ]] || return 0
 
-  # M0 is silent. M3 is silent during dialing.
-  if [[ "$speaker_mode" == "0" || "$speaker_mode" == "3" ]]; then
-    return
-  fi
+    case "$1" in
+        dialtone) set -- dialtone "$dialtone_time" ;;
+        dtmf)     set -- dtmf "$2" ;;
+        ringback) set -- ringback "$ringback_cycles" "$ringback_pause" ;;
+        *) return 1 ;;
+    esac
 
-  if [[ ! -f "${soundhelper}" ]]; then
-    return
-  fi
-
-  case "${soundtype}" in
-      "dialtone")
-	      params=${dialtone_time}
-	      ;;
-      "ringback")
-	      params=${ringback_cycles} ${ringback_pause}
-	      ;;
-      "dtmf")
-	      params=${digits}
-	      ;;
-  esac
-  python3 "${soundhelper}" "${soundtype}" "${params}"
+    python3 "$soundhelper" "$@"
 }
 
 export -f sendtty
