@@ -1,11 +1,18 @@
 #!/bin/bash
-# RUN PPPD DAEMON
 #
-# Oliver Molini 2021
+# TPC-VModem - PPP connection handler
 #
-# Billy Stoughton II for bug fixes and contributions
+# Original VMODEM implementation by Oliver Molini (2021)
+# Original contributions:
+#   Billy Stoughton II - Bug fixes and contributions
 #
-# Licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International Public License
+# TPC-VModem modifications and extensions:
+#   Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
+#
+# Original project:
+# https://www.steptail.com/guides:virtual_modem
+#
+# License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
 # https://creativecommons.org/licenses/by-nc-sa/4.0/
 #
 # Note on PPPD settings:

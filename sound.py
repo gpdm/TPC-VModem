@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-
+#
+# TPC-VModem - GPIO sound generator
+#
+# Dial tone and DTMF synthesis using Raspberry Pi GPIO and pigpio.
+#
+# Developed for TPC-VModem:
+#   Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
+#
+# Part of TPC-VModem, an extension of Oliver Molini's original
+# VMODEM project (2020-2022).
+#
+# License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+# https://creativecommons.org/licenses/by-nc-sa/4.0/
+#
 import sys
 import time
 import math

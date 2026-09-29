@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
-# TPC VModem setup, Raspberry Pi OS with systemd.
-# Installs in /opt/vmodem, downloads missing files, and configures dependencies.
-
+#
+# TPC-VModem - Installation and system configuration
+#
+# Installs project files, system dependencies and systemd services.
+#
+# Developed for TPC-VModem:
+#   Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
+#
+# Part of TPC-VModem, an extension of Oliver Molini's original
+# VMODEM project (2020-2022).
+#
+# License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+# https://creativecommons.org/licenses/by-nc-sa/4.0/
+#
 set -euo pipefail
 
 PROJECT_DIR=/opt/vmodem
@@ -114,7 +125,7 @@ configure_pigpiod() {
         # Source installations may have no packaged systemd unit.
         cat > /etc/systemd/system/pigpiod.service <<UNIT
 [Unit]
-Description=pigpio daemon for TPC VModem
+Description=pigpio daemon for TPC-VModem
 
 [Service]
 Type=forking

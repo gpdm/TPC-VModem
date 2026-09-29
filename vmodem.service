@@ -1,5 +1,11 @@
+# TPC-VModem - systemd service
+# Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
+#
+# License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+# https://creativecommons.org/licenses/by-nc-sa/4.0/
+
 [Unit]
-Description=TPC VModem virtual Hayes modem
+Description=TPC-VModem virtual Hayes modem
 Requires=pigpiod.service
 After=network.target pigpiod.service
 

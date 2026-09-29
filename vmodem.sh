@@ -1,16 +1,21 @@
 #!/bin/bash
 #
-# --------------------------------
-# VMODEM - Virtual Modem bootstrap
-# --------------------------------
-# Oliver Molini 2020-2022
+# TPC-VModem - Hayes-compatible virtual modem
 #
-# Additional credits:
-# - Billy Stoughton II for bug fixes and contributions
-# - Hamish for helping test Windows 2000 compatibility
+# Original VMODEM by Oliver Molini (2020-2022)
+# Original contributions:
+#   Billy Stoughton II - Bug fixes and contributions
+#   Hamish - Windows 2000 compatibility testing
 #
-# Licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International Public License
+# TPC-VModem modifications and extensions:
+#   Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
+#
+# Original project:
+# https://www.steptail.com/guides:virtual_modem
+#
+# License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
 # https://creativecommons.org/licenses/by-nc-sa/4.0/
+#
 
 # Tested working out of box with the following client configurations:
 #

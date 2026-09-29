@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Synthetic modem noise from pppd's live record FIFO.
-
-Original Raspberry Pi 1: select precomputed sound blocks from a disk cache.
-Other models: synthesize live audio from incoming PPP traffic.
-Both modes use pigpio DMA playback on GPIO18; the FIFO is always drained.
-
-    python3 ppp_noise.py --prepare    # Optional: precompute a cache on any host
-    python3 ppp_noise.py --check      # Cache required only on Raspberry Pi 1
-    python3 ppp_noise.py FIFO [debug]
-"""
+#
+# TPC-VModem - Synthetic modem connection audio
+#
+# Generates modem connection sounds from live PPP traffic.
+# Supports cached synthesis on Raspberry Pi 1 and live synthesis
+# on newer models.
+#
+# Developed for TPC-VModem:
+#   Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
+#
+# Part of TPC-VModem, an extension of Oliver Molini's original
+# VMODEM project (2020-2022).
+#
+# License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+# https://creativecommons.org/licenses/by-nc-sa/4.0/
+#
+# Usage:
+#    python3 ppp_noise.py --prepare    # Optional: precompute a cache on any host
+#    python3 ppp_noise.py --check      # Cache required only on Raspberry Pi 1
+#    python3 ppp_noise.py FIFO [debug]
 
 import gzip
 import json
