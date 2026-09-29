@@ -36,8 +36,8 @@ The sound effects are generated directly through Raspberry Pi GPIO. No sound car
            |            |         |                |
            | Dial tone  |         | NUMBER.sh      |
            | DTMF       |         | or ppp.sh      |
-           +------+-----+         +-------+--------+
-                  |                       |
+           | V.34       |         +-------+--------+
+           +------+-----+                 |
                   |                       v
                   |               +----------------+
                   |               |     ppp.sh     |
@@ -93,7 +93,7 @@ The sound effects are generated directly through Raspberry Pi GPIO. No sound car
 ```
 
 
-Dial tone and DTMF are controlled directly by `vmodem.sh` and generated through `sound.py`, using hardware PWM and DMA.
+Dial tone, DTMF and V.34 sequences are controlled directly by `vmodem.sh` and generated through `sound.py`, using hardware PWM and DMA.
 
 Once a call is handed over to PPP, `vmodem.sh` waits for `ppp.sh` to return. The PPP connection noise is generated asynchronously by `ppp_noise.py`, which is launched by `ppp.sh.
 
