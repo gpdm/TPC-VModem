@@ -493,7 +493,7 @@ while [ "$continue" != "1" ]; do
           echo -en "\x1b[20h" > /dev/$serport
 
           # Run the selected service. vmodem waits here until it returns.
-          "$dialscript"
+          speaker_mode="$speaker_mode" "$dialscript"
 
           if [[ $carrierdetect == 1 ]]; then exec 99<>/dev/$serport; fi
 

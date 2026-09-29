@@ -78,14 +78,18 @@ if ! mkfifo "$recordfifo"; then
   exit 1
 fi
 
-# Start the record reader first. It will block on the FIFO until pppd
-# opens the write side. Until ppp_noise.py exists, simply drain the
-# stream so the PPP record path can already be tested safely.
-if [[ -f "$noisereader" ]]; then
-  python3 "$noisereader" "$recordfifo" &
-else
-  cat "$recordfifo" >/dev/null &
-fi
+# Start the record reader first.
+# It will block on the FIFO until pppd opens the write side.
+[[ -f "$noisereader" ]] || speaker_mode=0
+case "${speaker_mode:-0}" in
+    1|2)
+	python3 "$noisereader" "$recordfifo" &
+	;;
+    *)
+	cat "$recordfifo" >/dev/null &
+	;;
+esac
+
 recordpid=$!
 
 # Run PPP daemon and establish a link.
