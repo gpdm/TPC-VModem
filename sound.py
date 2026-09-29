@@ -2,7 +2,7 @@
 #
 # TPC-VModem - GPIO sound generator
 #
-# Dial tone and DTMF synthesis using Raspberry Pi GPIO and pigpio.
+# Dial tone, DTMF and ringback via Raspberry Pi GPIO.
 #
 # Developed for TPC-VModem:
 #   Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
@@ -32,7 +32,9 @@ GPIO_PIN = 18                 # BCM 18, physical pin 12
 GPIO_MASK = 1 << GPIO_PIN
 
 DIALTONE_FREQ = 425
-
+RINGBACK_TONE_SECONDS = 1.0
+RINGBACK_PAUSE_SECONDS = 3.0
+RINGBACK_CYCLES = 2
 DTMF_TIME = 0.12
 
 # adjust timings depending on Raspberry Pi model
@@ -148,6 +150,62 @@ def make_dual_tone(freq1, freq2, duration):
     return pulses
 
 
+def play_pulses(pi, pulses):
+    """Play one short DMA waveform; stop it promptly on SIGTERM/SIGINT."""
+    pi.wave_add_new()
+    pi.wave_add_generic(pulses)
+    wave_id = pi.wave_create()
+    if wave_id < 0:
+        raise RuntimeError(f"pigpio wave_create failed: {wave_id}")
+
+    try:
+        pi.wave_send_once(wave_id)
+        while running and pi.wave_tx_busy():
+            time.sleep(0.005)
+    finally:
+        if pi.wave_tx_busy():
+            pi.wave_tx_stop()
+        pi.wave_delete(wave_id)
+        pi.write(GPIO_PIN, 0)
+
+
+def wait(seconds):
+    """Interruptible wait, used for the pause between ringback tones."""
+    end = time.monotonic() + seconds
+    while running:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
+
+
+def play_ringback(cycles, pause_seconds):
+    """425 Hz ringback with configurable pauses between rings."""
+    pi = open_gpio()
+    try:
+        for cycle in range(cycles):
+            if not running:
+                break
+            pi.hardware_PWM(GPIO_PIN, DIALTONE_FREQ, 500000)
+            try:
+                wait(RINGBACK_TONE_SECONDS)
+            finally:
+                pi.hardware_PWM(GPIO_PIN, 0, 0)
+                pi.write(GPIO_PIN, 0)
+
+            # No extra pause after the final ring.
+            if cycle < cycles - 1:
+                wait(pause_seconds)
+
+    finally:
+        try:
+            pi.hardware_PWM(GPIO_PIN, 0, 0)
+            pi.wave_tx_stop()
+            pi.write(GPIO_PIN, 0)
+        finally:
+            pi.stop()
+
+
 def play_dtmf(number):
     pi = open_gpio()
 
@@ -164,23 +222,8 @@ def play_dtmf(number):
             freq1, freq2 = DTMF[digit]
             pulses = make_dual_tone(freq1, freq2, DTMF_TIME)
 
-            # pigpiod outputs the complete wave using DMA. Python only
-            # prepares it and waits for the transmission to finish.
-            pi.wave_add_new()
-            pi.wave_add_generic(pulses)
-            wave_id = pi.wave_create()
-            if wave_id < 0:
-                raise RuntimeError(f"pigpio wave_create failed: {wave_id}")
-
-            try:
-                pi.wave_send_once(wave_id)
-                while running and pi.wave_tx_busy():
-                    time.sleep(0.005)
-            finally:
-                if pi.wave_tx_busy():
-                    pi.wave_tx_stop()
-                pi.wave_delete(wave_id)
-                pi.write(GPIO_PIN, 0)
+            # pigpiod outputs this short waveform via DMA.
+            play_pulses(pi, pulses)
 
             if running:
                 time.sleep(DTMF_GAP)
@@ -200,6 +243,8 @@ def usage():
     print("  sound.py dialtone")
     print("  sound.py dialtone SECONDS")
     print("  sound.py dtmf NUMBER")
+    print("  sound.py ringback [CYCLES [PAUSE_SECONDS]]")
+    print("    Defaults: 2 cycles, 1s tone, 3s pause between tones")
 
 
 def main():
@@ -224,6 +269,22 @@ def main():
         else:
             duration = None
         tone(DIALTONE_FREQ, duration)
+        return 0
+
+    if command == "ringback":
+        if not 2 <= len(sys.argv) <= 4:
+            usage()
+            return 1
+        try:
+            cycles = int(sys.argv[2]) if len(sys.argv) >= 3 else RINGBACK_CYCLES
+            pause = float(sys.argv[3]) if len(sys.argv) >= 4 else RINGBACK_PAUSE_SECONDS
+        except ValueError:
+            usage()
+            return 1
+        if cycles < 1 or not (math.isfinite(pause) and pause >= 0):
+            usage()
+            return 1
+        play_ringback(cycles, pause)
         return 0
 
     if command == "dtmf":
