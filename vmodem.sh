@@ -117,7 +117,7 @@ noisecache="ppp_noise_cache_v1.json.gz"
 speaker_mode=1
 
 # Dialtone is only heard briefly after ATD, not while idle.
-dialtone_time=1
+dialtone_time=2
 
 # number of ringbacks and pauses
 ringback_cycles=2
