@@ -57,7 +57,7 @@ download_scripts() {
 check_scripts() {
     echo '[2/5] Checking project files'
     local missing=() script
-    for script in vmodem.sh ppp.sh sound.py ppp_noise.py vmodem.service; do
+    for script in vmodem.sh ppp.sh sound.py ppp_noise.py vmodem.service v34_sound_v2.bin.gz; do
         [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
     done
     if ((${#missing[@]})); then

@@ -192,6 +192,11 @@ emit_sound () {
         dialtone) set -- dialtone "$dialtone_time" ;;
         dtmf)     set -- dtmf "$2" ;;
         ringback) set -- ringback "$ringback_cycles" "$ringback_pause" ;;
+        v34)
+    		python3 "$soundhelper" v34 &
+		sleep 13
+		return
+		;;
         *) return 1 ;;
     esac
 
@@ -470,6 +475,7 @@ while [ "$continue" != "1" ]; do
 
         if [[ $resultverbose == 1 ]]; then sendtty "RINGING\n"; fi
 	emit_sound ringback
+	emit_sound v34
 
         # A number-specific script wins. Everything else is handled
         # by the default PPP service.

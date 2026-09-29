@@ -2,7 +2,7 @@
 #
 # TPC-VModem - GPIO sound generator
 #
-# Dial tone, DTMF and ringback via Raspberry Pi GPIO.
+# Dial tone, DTMF, ringback, and precomputed V.34 audio via GPIO18.
 #
 # Developed for TPC-VModem:
 #   Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
@@ -13,6 +13,8 @@
 # License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
 # https://creativecommons.org/licenses/by-nc-sa/4.0/
 #
+import gzip
+import struct
 import sys
 import time
 import math
@@ -44,6 +46,9 @@ else:
     DTMF_GAP = 0.03
 
 WAVE_SAMPLE_RATE = 20000
+V34_CACHE = Path(__file__).resolve().with_name("v34_sound_v2.bin.gz")
+V34_MAGIC = b"TPCV34\x02\x00"
+V34_CHUNK_MS = 500
 
 
 DTMF = {
@@ -236,6 +241,106 @@ def play_dtmf(number):
             pi.stop()
 
 
+
+def load_v34_cache():
+    """Load the compact, low-transition V.34 audio (no NumPy needed)."""
+    try:
+        with gzip.open(V34_CACHE, "rb") as file:
+            header = file.read(16)
+            if len(header) != 16:
+                raise ValueError("truncated header")
+            magic, sample_rate, count = struct.unpack("<8sII", header)
+            if magic != V34_MAGIC or sample_rate != 40000 or not (0 < count < 40000 * 120):
+                raise ValueError("unsupported V.34 cache format")
+            data = file.read()
+    except OSError as exc:
+        raise RuntimeError(f"Cannot load V.34 audio cache {V34_CACHE}: {exc}") from exc
+    if len(data) != (count + 7) // 8:
+        raise RuntimeError("V.34 cache is truncated or invalid")
+    return sample_rate, count, data
+
+
+def v34_pulses(data, start, end, sample_us):
+    """Convert just one short section of packed 1-bit audio to pigpio pulses."""
+    level = bool(data[start >> 3] & (1 << (7 - (start & 7))))
+    run = 0
+    pulses = []
+    for sample in range(start, end):
+        next_level = bool(data[sample >> 3] & (1 << (7 - (sample & 7))))
+        if next_level != level:
+            pulses.append(pigpio.pulse(
+                GPIO_MASK if level else 0,
+                0 if level else GPIO_MASK,
+                run * sample_us,
+            ))
+            level = next_level
+            run = 0
+        run += 1
+    if run:
+        pulses.append(pigpio.pulse(
+            GPIO_MASK if level else 0,
+            0 if level else GPIO_MASK,
+            run * sample_us,
+        ))
+    return pulses
+
+
+def play_v34():
+    """Stream the prepared V.8/V.34 handshake using pigpio DMA waves."""
+    sample_rate, count, data = load_v34_cache()
+    # 40 kHz GPIO sample rate = 25 us, exact integer pigpio timing.
+    sample_us = 1000000 // sample_rate
+    chunk_samples = sample_rate * V34_CHUNK_MS // 1000
+    pi = open_gpio()
+    previous_id = None
+    try:
+        pi.set_mode(GPIO_PIN, pigpio.OUTPUT)
+        pi.write(GPIO_PIN, 0)
+        pi.wave_clear()
+        for start in range(0, count, chunk_samples):
+            if not running:
+                break
+            pulses = v34_pulses(data, start, min(start + chunk_samples, count), sample_us)
+            pi.wave_add_new()
+            pi.wave_add_generic(pulses)
+            wave_id = pi.wave_create_and_pad(50)
+            if wave_id < 0:
+                raise RuntimeError(f"pigpio V.34 wave_create failed: {wave_id}")
+
+            if previous_id is None:
+                pi.wave_send_once(wave_id)
+            elif pi.wave_tx_busy():
+                # Let pigpio switch on the precise previous-wave boundary.
+                pi.wave_send_using_mode(wave_id, pigpio.WAVE_MODE_ONE_SHOT_SYNC)
+                while running:
+                    active = pi.wave_tx_at()
+                    if active == wave_id:
+                        break
+                    if active == pigpio.NO_TX_WAVE:
+                        # A slow Pi may underrun while preparing the next wave.
+                        print("sound.py: V.34 playback underrun", file=sys.stderr)
+                        pi.wave_send_once(wave_id)
+                        break
+                    time.sleep(0.004)
+                if not running:
+                    break
+                pi.wave_delete(previous_id)
+            else:
+                print("sound.py: V.34 playback underrun", file=sys.stderr)
+                pi.wave_delete(previous_id)
+                pi.wave_send_once(wave_id)
+            previous_id = wave_id
+
+        while running and pi.wave_tx_busy():
+            time.sleep(0.01)
+    finally:
+        try:
+            pi.wave_tx_stop()
+            pi.wave_clear()
+            pi.write(GPIO_PIN, 0)
+        finally:
+            pi.stop()
+
 def usage():
     print("Usage:")
     print()
@@ -244,6 +349,7 @@ def usage():
     print("  sound.py dialtone SECONDS")
     print("  sound.py dtmf NUMBER")
     print("  sound.py ringback [CYCLES [PAUSE_SECONDS]]")
+    print("  sound.py v34")
     print("    Defaults: 2 cycles, 1s tone, 3s pause between tones")
 
 
@@ -285,6 +391,13 @@ def main():
             usage()
             return 1
         play_ringback(cycles, pause)
+        return 0
+
+    if command == "v34":
+        if len(sys.argv) != 2:
+            usage()
+            return 1
+        play_v34()
         return 0
 
     if command == "dtmf":
