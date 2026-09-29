@@ -195,7 +195,7 @@ emit_sound () {
         v34)
     		[[ "$speaker_mode" == 3 ]] && return 0
     		python3 "$soundhelper" v34 &
-		sleep 9
+		sleep 10
 		return
 		;;
         *) return 1 ;;
