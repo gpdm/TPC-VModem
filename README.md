@@ -211,3 +211,5 @@ TPC-VModem is distributed under the same license.
 * Original [Virtual Modem guide](https://www.steptail.com/guides:virtual_modem)
 
 * Original [Virtual Modem scripts](https://www.steptail.com/guides:virtual_modem:script)
+
+* Original [V.34 handshake generator by serg123e](https://github.com/serg123e/v34handshake)
