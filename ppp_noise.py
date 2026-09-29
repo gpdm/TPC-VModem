@@ -25,6 +25,7 @@ import json
 import math
 import os
 import queue
+import signal
 import sys
 import threading
 import time
@@ -84,7 +85,7 @@ def cache_signature():
             LOW_HZ, MID_HZ, HIGH_HZ, NOISE_SECONDS]
 
 
-def synthesize_samples(start_t, count, tx, rx, seed, filtered=0.0):
+def synthesize_samples(start_t, count, tx, rx, seed, filtered=0.0, fade_out=True):
     """One synthesizer for cached and live modes; return the RNG/filter state."""
     first_level = last_level = None
     durations = []
@@ -115,7 +116,7 @@ def synthesize_samples(start_t, count, tx, rx, seed, filtered=0.0):
         raw = ((seed >> 16) / 16384.0) - 1.0
         filtered = 0.91 * filtered + 0.09 * raw
         wave += hiss * filtered
-        if t > NOISE_SECONDS - 0.2:
+        if fade_out and t > NOISE_SECONDS - 0.2:
             wave *= max(0.0, (NOISE_SECONDS - t) / 0.2)
         level = int(wave > 0.02)
 
@@ -139,11 +140,11 @@ def generate_chunk(start_t, tx, rx, seed):
     return piece
 
 
-def generate_live_chunk(first_sample, count, tx, rx, seed, filtered):
+def generate_live_chunk(first_sample, count, tx, rx, seed, filtered, continuous=False):
     # Live mode continues noise-filter state and responds to the latest traffic.
     seed ^= (tx << 1) ^ (rx << 9)
     return synthesize_samples(first_sample / SAMPLE_RATE, count, tx, rx,
-                              seed, filtered)
+                              seed, filtered, fade_out=not continuous)
 
 
 def prepare_cache():
@@ -214,6 +215,8 @@ def build_gpio_pulses(piece):
 class NoisePlayer:
     def __init__(self, debug=False):
         self.debug = debug
+        self.cached = needs_cache()
+        self.continuous = not self.cached and os.environ.get('speaker_mode') == '2'
         self.events = queue.Queue(maxsize=EVENT_QUEUE_SIZE)
         self.started = None
         self.stop = threading.Event()
@@ -233,7 +236,7 @@ class NoisePlayer:
         now = time.monotonic()
         if self.started is None:
             self.started = now
-        if now - self.started >= NOISE_SECONDS:
+        if not self.continuous and now - self.started >= NOISE_SECONDS:
             return
         # Summarize live PPP data. Never block FIFO input on audio output.
         step = max(1, len(data) // 16)
@@ -259,20 +262,20 @@ class NoisePlayer:
     def play(self):
         # Disk loading, live synthesis and pigpio operate only in this worker.
         # The main thread must continue reading the record FIFO regardless.
-        cached = needs_cache()
-        bank = load_cache() if cached else None
-        if cached and bank is None:
+        bank = load_cache() if self.cached else None
+        if self.cached and bank is None:
             return
         if self.debug:
-            print('ppp_noise.py: ' + ('cached (Pi 1)' if cached else 'live') +
-                  ' audio', file=sys.stderr)
+            mode = 'cached (Pi 1)' if self.cached else (
+                'live (continuous)' if self.continuous else 'live (6 seconds)')
+            print(f'ppp_noise.py: {mode} audio', file=sys.stderr)
 
         pi = None
         previous_id = None
         tx, rx = 61, 113
         seed, filtered = 12345, 0.0
         sample_number = 0
-        frame_ms = CHUNK_MS if cached else LIVE_CHUNK_MS
+        frame_ms = CHUNK_MS if self.cached else LIVE_CHUNK_MS
         count = SAMPLE_RATE * frame_ms // 1000
         frame_count = (int(SAMPLE_RATE * NOISE_SECONDS) + count - 1) // count
         try:
@@ -286,11 +289,10 @@ class NoisePlayer:
             while not self.stop.is_set() and self.started is None:
                 time.sleep(0.01)
 
-            for frame in range(frame_count):
-                if self.stop.is_set():
-                    break
+            frame = 0
+            while not self.stop.is_set() and (self.continuous or frame < frame_count):
                 tx, rx = self.recent_traffic(tx, rx)
-                if cached:
+                if self.cached:
                     if frame < 3:
                         key = f'intro{frame}'
                     else:
@@ -298,15 +300,17 @@ class NoisePlayer:
                         key = f'{phase}_{min(tx // 64, 3)}_{min(rx // 86, 2)}'
                     piece = bank[key]
                 else:
-                    remaining = int(SAMPLE_RATE * NOISE_SECONDS) - sample_number
+                    chunk = (count if self.continuous else
+                             min(count, int(SAMPLE_RATE * NOISE_SECONDS) - sample_number))
                     started = time.monotonic()
                     piece, seed, filtered = generate_live_chunk(
-                        sample_number, min(count, remaining), tx, rx, seed, filtered)
+                        sample_number, chunk, tx, rx, seed, filtered,
+                        continuous=self.continuous)
                     if self.debug:
-                        print(f'ppp_noise.py: synthesized {frame_ms} ms in '
+                        print(f'ppp_noise.py: synthesized {chunk * 1000 // SAMPLE_RATE} ms in '
                               f'{(time.monotonic() - started)*1000:.0f} ms',
                               file=sys.stderr)
-                    sample_number += min(count, remaining)
+                    sample_number += chunk
 
                 pi.wave_add_new()
                 pi.wave_add_generic(build_gpio_pulses(piece))
@@ -332,6 +336,7 @@ class NoisePlayer:
                 if previous_id is not None:
                     pi.wave_delete(previous_id)
                 previous_id = wave_id
+                frame += 1
 
             if not self.stop.is_set():
                 while pi.wave_tx_busy() and not self.stop.is_set():
@@ -449,5 +454,11 @@ def main():
         return 1
 
 
+def handle_sigterm(signum, frame):
+    raise KeyboardInterrupt
+
+
 if __name__ == '__main__':
+    # ppp.sh terminates the reader when pppd exits. Run normal cleanup.
+    signal.signal(signal.SIGTERM, handle_sigterm)
     sys.exit(main())
