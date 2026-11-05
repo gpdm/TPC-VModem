@@ -182,10 +182,18 @@ this may help.
 
 As noted, TPC-VModem provides a setup script which does the heavy lifting for you:
 
+```text
+***************************************************************************
+* IMPORTANT NOTE:                                                         *
+* Currently not working with latest Rasbperry Pi OS (Debian 13 „Trixie“)  *
+* Use previous version of Raspberry Pi OS for now - fixes are coming soon * 
+***************************************************************************
 ```
+
+```text
 cd /tmp
 wget https://raw.githubusercontent.com/gpdm/TPC-VModem/refs/heads/main/setup.sh
-bash setup.sh
+sudo bash setup.sh
 ```
 
 * creates /opt/vmodem
