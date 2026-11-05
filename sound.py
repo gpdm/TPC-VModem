@@ -85,12 +85,33 @@ def open_gpio():
     return pi
 
 
+def create_square_wave(pi, freq):
+    """Create one repeating square-wave cycle for a single frequency."""
+    period_us = int(round(1000000.0 / freq))
+    high_us = period_us // 2
+    low_us = period_us - high_us
+
+    pi.wave_add_new()
+    pi.wave_add_generic([
+        pigpio.pulse(GPIO_MASK, 0, high_us),
+        pigpio.pulse(0, GPIO_MASK, low_us),
+    ])
+    wave_id = pi.wave_create()
+    if wave_id < 0:
+        raise RuntimeError(f"pigpio wave_create failed: {wave_id}")
+    return wave_id
+
+
 def tone(freq, duration=None):
     pi = open_gpio()
+    wave_id = None
 
     try:
-        # Hardware PWM keeps the single-frequency dial tone stable.
-        pi.hardware_PWM(GPIO_PIN, int(round(freq)), 500000)
+        pi.set_mode(GPIO_PIN, pigpio.OUTPUT)
+        pi.write(GPIO_PIN, 0)
+
+        wave_id = create_square_wave(pi, freq)
+        pi.wave_send_repeat(wave_id)
 
         if duration is not None:
             end = time.monotonic() + duration
@@ -102,7 +123,9 @@ def tone(freq, duration=None):
 
     finally:
         try:
-            pi.hardware_PWM(GPIO_PIN, 0, 0)
+            pi.wave_tx_stop()
+            if wave_id is not None:
+                pi.wave_delete(wave_id)
             pi.write(GPIO_PIN, 0)
         finally:
             pi.stop()
@@ -187,16 +210,22 @@ def wait(seconds):
 def play_ringback(cycles, pause_seconds):
     """425 Hz ringback with configurable pauses between rings."""
     pi = open_gpio()
+    wave_id = None
+
     try:
+        pi.set_mode(GPIO_PIN, pigpio.OUTPUT)
+        pi.write(GPIO_PIN, 0)
+
+        wave_id = create_square_wave(pi, DIALTONE_FREQ)
+
         for cycle in range(cycles):
             if not running:
                 break
-            pi.hardware_PWM(GPIO_PIN, DIALTONE_FREQ, 500000)
-            try:
-                wait(RINGBACK_TONE_SECONDS)
-            finally:
-                pi.hardware_PWM(GPIO_PIN, 0, 0)
-                pi.write(GPIO_PIN, 0)
+
+            pi.wave_send_repeat(wave_id)
+            wait(RINGBACK_TONE_SECONDS)
+            pi.wave_tx_stop()
+            pi.write(GPIO_PIN, 0)
 
             # No extra pause after the final ring.
             if cycle < cycles - 1:
@@ -204,8 +233,9 @@ def play_ringback(cycles, pause_seconds):
 
     finally:
         try:
-            pi.hardware_PWM(GPIO_PIN, 0, 0)
             pi.wave_tx_stop()
+            if wave_id is not None:
+                pi.wave_delete(wave_id)
             pi.write(GPIO_PIN, 0)
         finally:
             pi.stop()
