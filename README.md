@@ -105,6 +105,11 @@ After the six second sound period ends, the reader continues draining the FIFO f
 
 And yes, *ATM* commands are honored.
 
+Use `ATI` (AT Information) to display system uptime and the current network
+interfaces with their IPv4 addresses. Loopback interfaces (`lo` and
+`lo0`) are excluded. This command uses `uptime` and `ip -4`,
+and is also listed in the `HELP` command reference.
+
 ## Changes From Original VModem
 
 * `vmodem.sh` extended to emit dial tone and DTMF sequences and an accurate V.34 handshake

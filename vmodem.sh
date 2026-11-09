@@ -158,6 +158,25 @@ sendtty () {
   echo -en "$message" | tee /dev/$serport
 }
 
+systeminfo () {
+  local system_uptime interfaces
+
+  if ! system_uptime=$(uptime); then
+    sendtty "Could not read system uptime.\n"
+    return 1
+  fi
+  sendtty "System uptime:\n$system_uptime\n"
+  sendtty "\nNetwork interfaces and IP addresses:\n"
+
+  if ! interfaces=$(ip -4 -brief address show); then
+    sendtty "Could not read network interfaces.\n"
+    return 1
+  fi
+  interfaces=$(printf '%s\n' "$interfaces" | awk '$1 != "lo" && $1 != "lo0"')
+
+  sendtty "$interfaces\n"
+}
+
 readtty () {
   # Reads input from TTY and stores it in variable given as first parameter
   line=
@@ -256,6 +275,11 @@ dohayes () {
   # - H0 Go on-hook (Hang up)
   # - H1 Go off-hook
   if [[ $hcmd == 'H' ]]; then result=0; fi
+
+  # ATI System information
+  if [[ $hcmd == 'I' && $hparm == '' ]]; then
+    if systeminfo; then result=0; fi
+  fi
 
   # ATM Speaker control
   # - M0 Speaker always off
@@ -475,8 +499,9 @@ while [ "$continue" != "1" ]; do
         emit_sound dtmf "$number"
 
         if [[ $resultverbose == 1 ]]; then sendtty "RINGING\n"; fi
-	emit_sound ringback
-	emit_sound v34
+
+        emit_sound ringback
+        emit_sound v34
 
         # A number-specific script wins. Everything else is handled
         # by the default PPP service.
@@ -544,6 +569,7 @@ while [ "$continue" != "1" ]; do
       sendtty "AT.........Tests serial connection, prints OK if successful\n"
       sendtty "ATE0/ATE1..Switch terminal echo 0-off or 1-on\n"
       sendtty "ATD#.......Run #.sh, or ppp.sh if no matching script exists\n"
+      sendtty "ATI........Display system uptime and network IP addresses\n"
       sendtty "ATM0-3.....Control virtual modem speaker\n"
       sendtty "ATZ........Reset modem settings\n"
       sendtty "\n"
