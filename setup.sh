@@ -57,7 +57,8 @@ download_scripts() {
 check_scripts() {
     echo '[2/5] Checking project files'
     local missing=() script
-    for script in vmodem.sh ppp.sh sound.py ppp_noise.py vmodem.service v34_sound_v2.bin.gz; do
+    for script in vmodem.sh ppp.sh sound.py ppp_noise.py \
+                  vmodem@.service 99-vmodem.rules v34_sound_v2.bin.gz; do
         [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
     done
     if ((${#missing[@]})); then
@@ -154,26 +155,37 @@ UNIT
     echo 'WARN: pigpiod did not become reachable. Check: journalctl -u pigpiod -n 30'
 }
 
-install_vmodem_service() {
-    echo '[5/5] Installing VModem systemd service'
-    local unit=/etc/systemd/system/vmodem.service
+install_vmodem_services() {
+    echo '[5/5] Installing dynamic VModem systemd services'
+    local systemd_dir=/etc/systemd/system
+    local udev_rules_dir=/etc/udev/rules.d
 
-    if [[ ! -f "$unit" ]] || ! cmp -s "$PROJECT_DIR/vmodem.service" "$unit"; then
-        install -m 0644 "$PROJECT_DIR/vmodem.service" "$unit"
-        echo 'vmodem.service: installed'
-    else
-        echo 'vmodem.service: unchanged'
-    fi
-
+    # check if historic startup via /etc/rc.local exists
     if [[ -f /etc/rc.local ]] && grep -Eq '^[[:space:]]*[^#]*vmodem' /etc/rc.local; then
         echo 'WARNING: /etc/rc.local still references vmodem. Remove the old startup entry.' >&2
     fi
 
+    # check for legacy vmodem service exists
+    echo 'Migrating legacy vmodem.service, if present'
+    if systemctl is-active --quiet vmodem.service; then
+        systemctl stop vmodem.service || fail 'Could not stop legacy vmodem.service.'
+    fi
+    if systemctl is-enabled --quiet vmodem.service; then
+        systemctl disable vmodem.service || fail 'Could not disable legacy vmodem.service.'
+    fi
+    [ -f "${systemd_dir}/vmodem.service" ] && rm -f "${systemd_dir}/vmodem.service"
+    [ -f "${PROJECT_DIR}/vmodem.service" ] && rm -f "${PROJECT_DIR}/vmodem.service"
+
+    # install systemd and udev rules for dynamic VModem
+    install -m 0644 "$PROJECT_DIR/vmodem@.service" "${systemd_dir}/vmodem@.service"
+    install -m 0644 "$PROJECT_DIR/99-vmodem.rules" "${udev_rules_dir}/99-vmodem.rules"
     systemctl daemon-reload
-    echo 'vmodem.service: enabling and restarting service'
-    systemctl enable vmodem.service
-    systemctl restart vmodem.service || fail 'Could not start vmodem.service. Check: journalctl -u vmodem -n 30'
-    echo 'vmodem.service: enabled and started'
+    udevadm control --reload-rules || fail 'Could not reload udev rules.'
+    udevadm trigger --action=add --subsystem-match=tty --sysname-match='ttyUSB*' ||
+        fail 'Could not trigger existing ttyUSB devices.'
+    udevadm trigger --action=add --subsystem-match=tty --sysname-match='ttyACM*' ||
+        fail 'Could not trigger existing ttyACM devices.'
+    echo 'Dynamic VModem service template and udev rules installed'
 }
 
 (($# == 0)) || fail 'Usage: sudo bash setup.sh'
@@ -183,6 +195,6 @@ move_setup
 check_scripts
 check_dependencies
 configure_pigpiod
-install_vmodem_service
+install_vmodem_services
 
 echo 'Setup complete.'

@@ -49,7 +49,7 @@
 #
 
 # Script version
-vmodver=1.7.2
+vmodver=2.0
 
 # CONFIGURATION
 # -----------------------
@@ -59,7 +59,7 @@ vmodver=1.7.2
 # to use /dev/ttyUSB0 for communication.
 # Common values: ttyUSB0 or ttyAMA0
 #
-serport=ttyUSB0
+serport=${1:-ttyUSB0}
 
 # Variable: baud
 # baud will tell the script to open the serial port at

@@ -1,22 +1,20 @@
-# TPC-VModem - systemd service
+# TPC-VModem - systemd service template
 # Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
 #
 # License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
 # https://creativecommons.org/licenses/by-nc-sa/4.0/
 
 [Unit]
-Description=TPC-VModem virtual Hayes modem
+Description=TPC-VModem virtual Hayes modem on /dev/%I
 Requires=pigpiod.service
-After=network.target pigpiod.service
+BindsTo=dev-%i.device
+After=network.target pigpiod.service dev-%i.device
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/vmodem
-ExecStart=/bin/bash /opt/vmodem/vmodem.sh
+ExecStart=/bin/bash /opt/vmodem/vmodem.sh %I
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-
-[Install]
-WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+2.0.0
+* First step towards Multi-DTE support:
+ * implemented udev rules to trigger dynamically on serial USB hotplug events
+ * implemented new service instance unit file for systemd to support
+   multiple USB serial adapters
+ * adapted setup.sh for new system/udev config files
+
+Note: this release does still use the non-daemonized sound.py.
+There's no checking for race conditions for PWM audio output
+for concurrent service instances.
