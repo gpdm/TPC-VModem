@@ -1,9 +1,12 @@
 2.0.0
-* First step towards Multi-DTE support:
+* Implemented VModem Multi-DTE support:
  * implemented udev rules to trigger dynamically on serial USB hotplug events
  * implemented new service instance unit file for systemd to support
    multiple USB serial adapters
  * adapted setup.sh for new system/udev config files
+* Relocated network setup to dependant unit service vmodem-network
+ * it's spawned when first serial USB device is plugged
+ * it's stopped when last serial USB device is unplugged
 
 Note: this release does still use the non-daemonized sound.py.
 There's no checking for race conditions for PWM audio output

@@ -70,14 +70,6 @@ sendtty  "Starting pppd...\n"
 sendtty  "PPP>"
 # End of fake login prompt.
 
-# Set the kernel to router mode
-sysctl -q net.ipv4.ip_forward=1
-
-# Share eth0 over ppp0
-iptables -t nat -A POSTROUTING -o $etherp -j MASQUERADE
-iptables -t filter -A FORWARD -i ppp0 -o $etherp -m state --state RELATED,ESTABLISHED -j ACCEPT
-iptables -t filter -A FORWARD -i $etherp -o ppp0 -j ACCEPT
-
 # Create the record FIFO before pppd starts.
 rm -f "$recordfifo"
 if ! mkfifo "$recordfifo"; then
@@ -119,9 +111,5 @@ if [[ -n "$recordpid" ]]; then
 fi
 
 rm -f "$recordfifo"
-
-# Flush iptables
-iptables -t filter -F FORWARD
-iptables -t nat -F POSTROUTING
 
 printf "\nPPP link terminated.\n"

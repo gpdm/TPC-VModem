@@ -1,0 +1,16 @@
+# TPC-VModem - shared network configuration
+# Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
+#
+# License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+# https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+[Unit]
+Description=TPC-VModem shared network configuration
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/vmodem
+ExecStart=/bin/bash /opt/vmodem/vmodem-network.sh start
+ExecStop=/bin/bash /opt/vmodem/vmodem-network.sh stop
