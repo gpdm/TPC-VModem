@@ -126,7 +126,6 @@ case "${speaker_mode:-0}" in
       cat "$recordfifo" >/dev/null &
       ;;
 esac
-
 recordpid=$!
 
 # Run PPP daemon and establish a link.
@@ -136,6 +135,18 @@ pppd noauth nodetach local lock \
   "10.0.100.1:$remote_ip" \
   ipparam "$profile_downstream:$profile_upstream" \
   record "$recordfifo" \
-  /dev/$serport $baud
+  /dev/$serport $baud &
+pppd_pid=$!
 
-printf "\nPPP link terminated.\n"
+# Monitor traffic shaping while PPP is running.
+while kill -0 "$pppd_pid" 2>/dev/null; do
+  printf "Traffic Shaper Status:\n"
+  tc -s qdisc show dev ppp0
+  tc -s qdisc show dev ifbppp0
+  sleep 60
+done
+
+wait "$pppd_pid"
+pppd_status=$?
+
+printf "\nPPP link terminated with status $pppd_status.\n"

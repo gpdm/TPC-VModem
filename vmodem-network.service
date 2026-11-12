@@ -14,3 +14,4 @@ RemainAfterExit=yes
 WorkingDirectory=/opt/vmodem
 ExecStart=/bin/bash /opt/vmodem/vmodem-network.sh start
 ExecStop=/bin/bash /opt/vmodem/vmodem-network.sh stop
+LogNamespace=vmodem

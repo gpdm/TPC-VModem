@@ -62,7 +62,8 @@ check_scripts() {
     local missing=() script
     for script in vmodem.sh ppp.sh sound.py ppp_noise.py ipam.json \
                   vmodem@.service vmodem-network.sh vmodem-network.service \
-                  99-vmodem.rules vmodem-shaper.sh v34_sound_v2.bin.gz; do
+                  99-vmodem.rules vmodem-shaper.sh journald@vmodem.conf \
+                  v34_sound_v2.bin.gz; do
         [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
     done
     if ((${#missing[@]})); then
@@ -163,10 +164,11 @@ install_vmodem_services() {
 
     # check if historic startup via /etc/rc.local exists
     if [[ -f /etc/rc.local ]] && grep -Eq '^[[:space:]]*[^#]*vmodem' /etc/rc.local; then
-        echo 'WARNING: /etc/rc.local still references vmodem. Remove the old startup entry.' >&2
+        echo 'WARNING: /etc/rc.local still references vmodem.' >&2
+        echo 'Please remove the old startup entry manually!' >&2
     fi
 
-    # check for legacy vmodem service exists
+    # check if legacy vmodem service exists
     echo 'Migrating legacy vmodem.service, if present'
     if systemctl is-active --quiet vmodem.service; then
         systemctl stop vmodem.service || fail 'Could not stop legacy vmodem.service.'
@@ -176,6 +178,12 @@ install_vmodem_services() {
     fi
     [ -f "${systemd_dir}/vmodem.service" ] && rm -f "${systemd_dir}/vmodem.service"
     [ -f "${PROJECT_DIR}/vmodem.service" ] && rm -f "${PROJECT_DIR}/vmodem.service"
+
+    # configure common logspace for vmodem
+    install -m 0644 "$PROJECT_DIR/journald@vmodem.conf" "/etc/systemd/journald@vmodem.conf"
+    if systemctl is-active --quiet systemd-journald@vmodem.service; then
+        systemctl restart systemd-journald@vmodem.service
+    fi
 
     # install systemd and udev rules for dynamic VModem
     install -m 0644 "$PROJECT_DIR/vmodem@.service" "${systemd_dir}/vmodem@.service"

@@ -19,3 +19,4 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
+LogNamespace=vmodem
