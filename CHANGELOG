@@ -7,6 +7,9 @@
 * Relocated network setup to dependant unit service vmodem-network
  * it's spawned when first serial USB device is plugged
  * it's stopped when last serial USB device is unplugged
+* Implemented CNI host-local as leightweight IPAM to
+  coordinate IP address assignments and revocations for ppp.sh
+  accross multiple instances
 
 Note: this release does still use the non-daemonized sound.py.
 There's no checking for race conditions for PWM audio output

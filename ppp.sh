@@ -20,13 +20,6 @@
 # - Make sure DNS servers are defined (add ms-dns 1.2.3.4 twice)
 #
 
-# Variable: etherp
-# Override the ethernet device to use to connect to your network.
-# This is set in vmodem.sh, but can be overridden here.
-#
-# Default:    #etherp=eth0 (commented out)
-#etherp=eth0
-
 # Variable: lcpidle
 # Specifies the idle timeout period in seconds for lcp-echo-interval.
 # This is to ensure that pppd will not run indefinitely after sudden
@@ -43,25 +36,70 @@ recordfifo="/run/tpc-vmodem-ppp-$$.fifo"
 noisereader="./ppp_noise.py"
 recordpid=
 
-cleanup_record () {
+# CNI host-local assigns one remote IP per PPP session.
+ipam_config="/opt/vmodem/ipam.json"
+ipam_binary="/usr/lib/cni/host-local"
+ipam_reserved=0
+
+
+# Function: ipam_command
+# Executes the CNI host-local IPAM plugin with the specified command (ADD or DEL).
+# Sets up the necessary environment variables for the plugin to operate.
+#
+ipam_command () {
+  CNI_COMMAND="$1" \
+  CNI_CONTAINERID="vmodem-$$" \
+  CNI_NETNS=/dev/null \
+  CNI_IFNAME=vmodem0 \
+  CNI_PATH=/usr/lib/cni \
+    "$ipam_binary" < "$ipam_config"
+}
+
+# Function: exit_handler
+# Cleans up the PPP record FIFO and releases the CNI IP reservation on exit.
+#
+exit_handler () {
+  # Stop the record reader if it is still running.
   if [[ -n "$recordpid" ]] && kill -0 "$recordpid" 2>/dev/null; then
     kill "$recordpid" 2>/dev/null
     wait "$recordpid" 2>/dev/null
   fi
-
   rm -f "$recordfifo"
+
+  # Release the CNI IP reservation if it was acquired.
+  if [[ "$ipam_reserved" == 1 ]]; then
+    if ! ipam_command DEL >/dev/null; then
+      printf 'WARNING: Unable to release CNI IP reservation.\n' >&2
+    fi
+    ipam_reserved=0
+  fi
 }
 
-trap cleanup_record EXIT
+# catch signals and ensure cleanup is performed
+trap exit_handler EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-#
+# Reserve an IP address before showing the fake login prompt.
+if ! ipam_result="$(ipam_command ADD)"; then
+  printf 'ERROR: Unable to allocate a remote IP address.\n' >&2
+  exit 1
+fi
+ipam_reserved=1
+
+# CNI returns CIDR notation, while pppd expects a plain IPv4 address.
+if ! remote_ip="$(printf '%s\n' "$ipam_result" | jq -er '.ips[] | select(.address | contains(":") | not) | .address | split("/")[0]')" || [[ -z "$remote_ip" ]]; then
+  printf 'ERROR: Invalid IPv4 allocation returned by CNI.\n' >&2
+  exit 1
+fi
+
+
 # Trumpet Winsock 3.0 revision D for Windows 3.1
 # by default requires a fake login shell.
 #
 # Windows 95 and 98 will not care for a login shell
 # unless specifically told to expect one.
 #
-
 sleep 2
 sendtty "\n\n`uname -sn`****\n\n"
 sendtty  "Username: "; sleep 1; sendtty "\n"
@@ -82,11 +120,11 @@ fi
 [[ -f "$noisereader" ]] || speaker_mode=0
 case "${speaker_mode:-0}" in
     1|2)
-	python3 "$noisereader" "$recordfifo" &
-	;;
+	    python3 "$noisereader" "$recordfifo" &
+	    ;;
     *)
-	cat "$recordfifo" >/dev/null &
-	;;
+      cat "$recordfifo" >/dev/null &
+      ;;
 esac
 
 recordpid=$!
@@ -95,21 +133,8 @@ recordpid=$!
 pppd noauth nodetach local lock \
   lcp-echo-interval $lcpidle lcp-echo-failure 3 \
   proxyarp ms-dns 8.8.4.4 ms-dns 8.8.8.8 \
-  10.0.100.1:10.0.100.2 \
+  "10.0.100.1:$remote_ip" \
   record "$recordfifo" \
   /dev/$serport $baud
-
-# pppd is finished, so the record reader is no longer needed.
-# Normally it will already have seen EOF and exited. If it is still
-# around, stop it here so a failed pppd startup cannot leave us waiting.
-if [[ -n "$recordpid" ]]; then
-  if kill -0 "$recordpid" 2>/dev/null; then
-    kill "$recordpid" 2>/dev/null
-  fi
-  wait "$recordpid" 2>/dev/null
-  recordpid=
-fi
-
-rm -f "$recordfifo"
 
 printf "\nPPP link terminated.\n"

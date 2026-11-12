@@ -57,7 +57,7 @@ download_scripts() {
 check_scripts() {
     echo '[2/5] Checking project files'
     local missing=() script
-    for script in vmodem.sh ppp.sh sound.py ppp_noise.py \
+    for script in vmodem.sh ppp.sh sound.py ppp_noise.py ipam.json \
                   vmodem@.service vmodem-network.sh vmodem-network.service \
                   99-vmodem.rules v34_sound_v2.bin.gz; do
         [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
@@ -82,7 +82,8 @@ check_dependencies() {
 
     # Check everything once, then install all missing packages together.
     for entry in python3:python3 pigpiod:pigpio pppd:ppp \
-                 iptables:iptables xxd:xxd stty:coreutils sysctl:procps; do
+                 iptables:iptables xxd:xxd stty:coreutils sysctl:procps \
+                 /usr/lib/cni/host-local:containernetworking-plugins jq:jq; do
         program=${entry%%:*}
         package=${entry#*:}
         command -v "$program" >/dev/null 2>&1 || needed+=("$package")
