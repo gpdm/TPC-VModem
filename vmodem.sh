@@ -159,8 +159,10 @@ soundhelper="./sound.py"
 noisehelper="./ppp_noise.py"
 noisecache="ppp_noise_cache_v1.json.gz"
 
-# Hayes speaker mode. Default is M1.
-speaker_mode=1
+# Hayes speaker mode.
+# ISDN is always silent (M0), analog modems default to M1.
+[[ "$modem_profile" == ISDN* ]] && speaker_mode_default=0 || speaker_mode_default=1
+speaker_mode=${speaker_mode_default}  
 
 # Dialtone is only heard briefly after ATD, not while idle.
 dialtone_time=2
@@ -189,7 +191,8 @@ export TERM
 # Functions
 # -----------------------
 
-#INITIALIZE SERIAL SETTINGS
+# Function: ttyinit
+# Initializes serial settings for the specified TTY port.
 ttyinit () {
   stty -F /dev/$serport $baud
   stty -F /dev/$serport sane
@@ -197,12 +200,196 @@ ttyinit () {
   stty -F /dev/$serport -echo -icrnl onlcr opost clocal -crtscts
 }
 
-# SEND MESSAGE ON SCREEN AND OVER SERIAL
+# Function: sendtty
+# Parameters:
+# - $1: Message to send
 sendtty () {
   # Prints message in console and over serial. Message is given as first parameter.
   message="$1"
   echo -en "$message" | tee /dev/$serport
 }
+
+# Function: readtty
+# Reads input from TTY and stores it in variable given as first parameter.
+readtty () {
+  # Reads input from TTY and stores it in variable given as first parameter
+  line=
+  while [[ -z "$line" ]]; do
+    charhex=`head -c 1 /dev/$serport | xxd -p -`
+    char="`echo -e "\x$charhex"`"
+    echo -n "$char"
+    echo -n "$char" > /dev/$serport
+    # Newline received
+    if [ "$charhex" = "0d" -o "$charhex" = "0a" ]; then
+      line=$buffer
+      buffer=
+      char=
+      sendtty "\n"
+    fi
+    buffer=$buffer$char
+  done
+  local __resultvar=$1
+  local result="$line"
+  printf -v "$__resultvar" '%s' "$result"
+}
+
+# Function: dohayes
+# Executes Hayes commands based on the provided command and parameter.
+# Sets the result code accordingly.
+dohayes () {
+  # default to error result code, if command not recognized
+  result=4
+
+  # Debugging
+  #sendtty "COMMAND: $hcmd $hparm\n"
+
+  # ATA
+  # - A Answer
+  if [[ $hcmd == 'A' ]]; then result=0; fi
+
+  # ATD Dial a number
+  if [[ $hcmd == 'D' ]]; then
+    if [[ ! -z "$hparm" ]]; then
+      number=$(echo $hparm |tr -dc '0-9')
+      result=0
+    fi
+  fi
+
+  # ATE Command echo to host
+  # - E0 Commands are not echoed
+  # - E1 Commands are echoed
+  if [[ $hcmd == 'E' ]]; then
+    if [[ $hparm == '' ]]; then echoser=0; result=0; fi
+    if [[ $hparm == '0' ]]; then echoser=0; result=0; fi
+    if [[ $hparm == '1' ]]; then echoser=1; result=0; fi
+  fi
+
+  # ATH Hang up or pick-up.
+  # - H0 Go on-hook (Hang up)
+  # - H1 Go off-hook
+  if [[ $hcmd == 'H' ]]; then result=0; fi
+
+  # ATI System information
+  if [[ $hcmd == 'I' && $hparm == '' ]]; then
+    if systeminfo; then result=0; fi
+  fi
+
+  # ATM Speaker control
+  # - M0 Speaker always off
+  # - M1 Speaker on until carrier detected
+  # - M2 Speaker always on
+  # - M3 Speaker off while dialing
+  if [[ $hcmd == 'M' ]]; then
+    if [[ $hparm == '' || $hparm == '1' ]]; then
+      speaker_mode=1
+      result=0
+    fi
+    if [[ $hparm == '0' ]]; then
+      speaker_mode=0
+      result=0
+    fi
+    if [[ $hparm == '2' ]]; then
+      speaker_mode=2
+      result=0
+    fi
+    if [[ $hparm == '3' ]]; then
+      speaker_mode=3
+      result=0
+    fi
+
+    # ISDN doesn't support audio output.
+    # discard ATM settings and revert to the default speaker mode (ATM0).
+    [[ "$modem_profile" == ISDN* ]] && speaker_mode=$speaker_mode_default
+  fi
+
+  # ATQn Result codes
+  # Q0 Modem returns result codes
+  # Q1 Quiet mode. Modem gives no result codes.
+  if [[ $hcmd == 'Q' ]]; then
+    if [[ $hparm == '' ]]; then resultverbose=0; result=0; fi
+    if [[ $hparm == '0' ]]; then resultverbose=0; result=0; fi
+    if [[ $hparm == '1' ]]; then resultverbose=2; result=0; fi
+  fi
+
+  # S Registers (just auto-accept)
+  if [[ $hcmd == 'S' ]]; then
+    result=0;
+  fi
+
+  # ATV Result codes in numerical or verbose form
+  # - V0 Returns the code in numerical form
+  # - V1 Full-word result codes
+  if [[ $hcmd == 'V' ]]; then
+    if [[ $hparm == '' ]]; then resultverbose=0; result=0; fi
+    if [[ $hparm == '0' ]]; then resultverbose=0; result=0; fi
+    if [[ $hparm == '1' ]]; then resultverbose=1; result=0; fi
+  fi
+
+  # ATXn Extended result codes
+  # - X0 Disable extended result codes (Hayes Smartmodem 300 compatible result codes)
+  # - X1 Add connection speed to basic result codes (e.g. CONNECT 1200)
+  # - X2 Add dial tone detection (preventing blind dial, and sometimes preventing ATO)
+  # - X3 Add busy signal detection
+  # - X4 Add both busy signal and dial tone detection
+  if [[ $hcmd == 'X' ]]; then
+    if [[ $hparm == '' ]]; then resultverbose=1; result=0; fi
+    if [[ $hparm == '0' ]]; then resultverbose=1; result=0; fi
+    if [[ $hparm == '1' ]]; then resultverbose=0; result=0; fi
+    if [[ $hparm == '2' ]]; then resultverbose=0; result=0; fi
+    if [[ $hparm == '3' ]]; then resultverbose=0; result=0; fi
+    if [[ $hparm == '4' ]]; then resultverbose=0; result=0; fi
+  fi
+
+  # ATZ Reset modem
+  # - Zn  Restore stored profile n
+  if [[ $hcmd == 'Z' ]]; then echoser=1; resultverbose=1; carrierdetect=0; speaker_mode=${speaker_mode_default}; result=0; fi
+
+  # AT&Cn Carrier-detect
+  # - &C0 Force DCD signal active
+  # - &C1 DCD signal indicates true state of remote carrier signal
+  if [[ $hcmd == '&C' ]]; then
+    if [[ $hparm == '' ]]; then result=0; carrierdetect=0; fi
+    if [[ $hparm == '0' ]]; then result=0; carrierdetect=0; fi
+    if [[ $hparm == '1' ]]; then result=0; carrierdetect=1; fi
+  fi
+
+  # AT&Dn Data Terminal Ready settings
+  # - &D0 Modem ignores DTR
+  # - &D1 Go to command mode on ON-to-OFF DTR transition.
+  # - &D2 Hang up on DTR-drop and go to command mode
+  # - &D3 Reset (ATZ) on DTR-drop. Modem hangs up.
+  if [[ $hcmd == '&D' ]]; then
+    if [[ $hparm == '' ]]; then result=0; fi
+    if [[ $hparm == '0' ]]; then result=0; fi
+    if [[ $hparm == '1' ]]; then result=0; fi
+    if [[ $hparm == '2' ]]; then result=0; fi
+    if [[ $hparm == '3' ]]; then result=0; fi
+  fi
+
+  # AT&F Restore factory settings
+  # - &Fn Use profile n
+  if [[ $hcmd == '&F' ]]; then echoser=1; resultverbose=1; carrierdetect=0; speaker_mode=${speaker_mode_default}; result=0; fi
+
+  # AT&K DTE - MODEM Flow control
+  # - &K0 Local flow control off
+  # - &K1 Not used
+  # - &K2 Not used
+  # - &K3 RTS/CTS
+  # - &K4 XON/XOFF
+  # - &K5 Transparent XON/XOFF
+  # - &K6 RTS/CTS and XON/XOFF
+  if [[ $hcmd == '&K' ]]; then result=0; fi
+
+  # AT&Sn DSR Override
+  # - &S0 DSR will remain on at all times.
+  # - &S1 DSR will become active after answer tone has been detected and inactive after the carrier has been lost
+  if [[ $hcmd == '&S' ]]; then
+    if [[ $hparm == '' ]]; then result=0; fi
+    if [[ $hparm == '0' ]]; then result=0; fi
+    if [[ $hparm == '1' ]]; then result=0; fi
+  fi
+}
+
 
 # Function: emit_sounds
 # Plays the specified sound using the sound helper, if enabled.
@@ -226,6 +413,9 @@ emit_sound () {
     python3 "$soundhelper" "$@"
 }
 
+
+# Function: systeminfo
+# Displays system uptime, IP addresses and current settings.
 systeminfo () {
   local system_uptime interfaces
 
@@ -234,40 +424,24 @@ systeminfo () {
     return 1
   fi
   sendtty "System uptime:\n$system_uptime\n"
-  sendtty "\nNetwork interfaces and IP addresses:\n"
 
+  sendtty "\nNetwork interfaces and IP addresses:\n"
   if ! interfaces=$(ip -4 -brief address show); then
     sendtty "Could not read network interfaces.\n"
     return 1
   fi
   interfaces=$(printf '%s\n' "$interfaces" | awk '$1 != "lo" && $1 != "lo0"')
-
   sendtty "$interfaces\n"
-}
 
-readtty () {
-  # Reads input from TTY and stores it in variable given as first parameter
-  line=
-  while [[ -z "$line" ]]; do
-    charhex=`head -c 1 /dev/$serport | xxd -p -`
-    char="`echo -e "\x$charhex"`"
-    echo -n "$char"
-    echo -n "$char" > /dev/$serport
-    # Newline received
-    if [ "$charhex" = "0d" -o "$charhex" = "0a" ]; then
-      line=$buffer
-      buffer=
-      char=
-      sendtty "\n"
-    fi
-    buffer=$buffer$char
-  done
-  local __resultvar=$1
-  local result="$line"
-  printf -v "$__resultvar" '%s' "$result"
+  sendtty "\nCurrent Modem Settings:\n"
+  sendtty "Baud rate: $baud\n"
+  sendtty "Modem profile: $modem_profile\n"
 }
 
 
+# Function: find_modem_profile
+# Finds a modem profile by its ID.
+# Returns 0 if found, 1 otherwise.
 find_modem_profile () {
   local entry id
   for entry in "${modem_profiles[@]}"; do
@@ -278,6 +452,10 @@ find_modem_profile () {
 }
 
 
+# Function: modem_configuration
+# Interactively configures the modem baud rate and emulation profile.
+# Prompts the user to select a baud rate and modem profile from available options.
+# Saves the configuration if it has changed.
 modem_configuration () {
   local selection new_baud new_modem entry id name down up min_baud i
   local baud_rates=() available_profiles=()
@@ -386,166 +564,14 @@ export -f ttyinit
 ttyinit
 exec 99<>/dev/$serport
 
+# print info banner
 sendtty "\n"
-sendtty "Virtual Modem bootstrap for PPP link v$vmodver\n"
-sendtty "Connection speed set to $baud baud.\n"
-sendtty "My current IP address is $(hostname -I).\n"
+sendtty "Virtual Modem bootstrap for PPP link v$vmodver\n\n"
+systeminfo
 sendtty "\n"
 sendtty "TYPE \"HELP\" FOR COMMAND REFERENCE.\n"
 sendtty "READY.\n"
 
-# No idle dialtone. It starts only when ATD is received.
-
-# execute hayes commands
-dohayes () {
-  # default to error result code, if command not recognized
-  result=4
-
-  # Debugging
-  #sendtty "COMMAND: $hcmd $hparm\n"
-
-  # ATA
-  # - A Answer
-  if [[ $hcmd == 'A' ]]; then result=0; fi
-
-  # ATD Dial a number
-  if [[ $hcmd == 'D' ]]; then
-    if [[ ! -z "$hparm" ]]; then
-      number=$(echo $hparm |tr -dc '0-9')
-      result=0
-    fi
-  fi
-
-  # ATE Command echo to host
-  # - E0 Commands are not echoed
-  # - E1 Commands are echoed
-  if [[ $hcmd == 'E' ]]; then
-    if [[ $hparm == '' ]]; then echoser=0; result=0; fi
-    if [[ $hparm == '0' ]]; then echoser=0; result=0; fi
-    if [[ $hparm == '1' ]]; then echoser=1; result=0; fi
-  fi
-
-  # ATH Hang up or pick-up.
-  # - H0 Go on-hook (Hang up)
-  # - H1 Go off-hook
-  if [[ $hcmd == 'H' ]]; then result=0; fi
-
-  # ATI System information
-  if [[ $hcmd == 'I' && $hparm == '' ]]; then
-    if systeminfo; then result=0; fi
-  fi
-
-  # ATM Speaker control
-  # - M0 Speaker always off
-  # - M1 Speaker on until carrier detected
-  # - M2 Speaker always on
-  # - M3 Speaker off while dialing
-  if [[ $hcmd == 'M' ]]; then
-    if [[ $hparm == '' || $hparm == '1' ]]; then
-      speaker_mode=1
-      result=0
-    fi
-    if [[ $hparm == '0' ]]; then
-      speaker_mode=0
-      result=0
-    fi
-    if [[ $hparm == '2' ]]; then
-      speaker_mode=2
-      result=0
-    fi
-    if [[ $hparm == '3' ]]; then
-      speaker_mode=3
-      result=0
-    fi
-  fi
-
-  # ATQn Result codes
-  # Q0 Modem returns result codes
-  # Q1 Quiet mode. Modem gives no result codes.
-  if [[ $hcmd == 'Q' ]]; then
-    if [[ $hparm == '' ]]; then resultverbose=0; result=0; fi
-    if [[ $hparm == '0' ]]; then resultverbose=0; result=0; fi
-    if [[ $hparm == '1' ]]; then resultverbose=2; result=0; fi
-  fi
-
-  # S Registers (just auto-accept)
-  if [[ $hcmd == 'S' ]]; then
-    result=0;
-  fi
-
-  # ATV Result codes in numerical or verbose form
-  # - V0 Returns the code in numerical form
-  # - V1 Full-word result codes
-  if [[ $hcmd == 'V' ]]; then
-    if [[ $hparm == '' ]]; then resultverbose=0; result=0; fi
-    if [[ $hparm == '0' ]]; then resultverbose=0; result=0; fi
-    if [[ $hparm == '1' ]]; then resultverbose=1; result=0; fi
-  fi
-
-  # ATXn Extended result codes
-  # - X0 Disable extended result codes (Hayes Smartmodem 300 compatible result codes)
-  # - X1 Add connection speed to basic result codes (e.g. CONNECT 1200)
-  # - X2 Add dial tone detection (preventing blind dial, and sometimes preventing ATO)
-  # - X3 Add busy signal detection
-  # - X4 Add both busy signal and dial tone detection
-  if [[ $hcmd == 'X' ]]; then
-    if [[ $hparm == '' ]]; then resultverbose=1; result=0; fi
-    if [[ $hparm == '0' ]]; then resultverbose=1; result=0; fi
-    if [[ $hparm == '1' ]]; then resultverbose=0; result=0; fi
-    if [[ $hparm == '2' ]]; then resultverbose=0; result=0; fi
-    if [[ $hparm == '3' ]]; then resultverbose=0; result=0; fi
-    if [[ $hparm == '4' ]]; then resultverbose=0; result=0; fi
-  fi
-
-  # ATZ Reset modem
-  # - Zn  Restore stored profile n
-  if [[ $hcmd == 'Z' ]]; then echoser=1; resultverbose=1; carrierdetect=0; speaker_mode=1; result=0; fi
-
-  # AT&Cn Carrier-detect
-  # - &C0 Force DCD signal active
-  # - &C1 DCD signal indicates true state of remote carrier signal
-  if [[ $hcmd == '&C' ]]; then
-    if [[ $hparm == '' ]]; then result=0; carrierdetect=0; fi
-    if [[ $hparm == '0' ]]; then result=0; carrierdetect=0; fi
-    if [[ $hparm == '1' ]]; then result=0; carrierdetect=1; fi
-  fi
-
-  # AT&Dn Data Terminal Ready settings
-  # - &D0 Modem ignores DTR
-  # - &D1 Go to command mode on ON-to-OFF DTR transition.
-  # - &D2 Hang up on DTR-drop and go to command mode
-  # - &D3 Reset (ATZ) on DTR-drop. Modem hangs up.
-  if [[ $hcmd == '&D' ]]; then
-    if [[ $hparm == '' ]]; then result=0; fi
-    if [[ $hparm == '0' ]]; then result=0; fi
-    if [[ $hparm == '1' ]]; then result=0; fi
-    if [[ $hparm == '2' ]]; then result=0; fi
-    if [[ $hparm == '3' ]]; then result=0; fi
-  fi
-
-  # AT&F Restore factory settings
-  # - &Fn Use profile n
-  if [[ $hcmd == '&F' ]]; then echoser=1; resultverbose=1; carrierdetect=0; speaker_mode=1; result=0; fi
-
-  # AT&K DTE - MODEM Flow control
-  # - &K0 Local flow control off
-  # - &K1 Not used
-  # - &K2 Not used
-  # - &K3 RTS/CTS
-  # - &K4 XON/XOFF
-  # - &K5 Transparent XON/XOFF
-  # - &K6 RTS/CTS and XON/XOFF
-  if [[ $hcmd == '&K' ]]; then result=0; fi
-
-  # AT&Sn DSR Override
-  # - &S0 DSR will remain on at all times.
-  # - &S1 DSR will become active after answer tone has been detected and inactive after the carrier has been lost
-  if [[ $hcmd == '&S' ]]; then
-    if [[ $hparm == '' ]]; then result=0; fi
-    if [[ $hparm == '0' ]]; then result=0; fi
-    if [[ $hparm == '1' ]]; then result=0; fi
-  fi
-}
 
 # MAIN LOOP
 while [ "$continue" != "1" ]; do
@@ -828,5 +854,5 @@ while [ "$continue" != "1" ]; do
   buffer=$buffer$char
 done
 
-#Close serial port
+# Close serial port
 exec 99>&-
