@@ -51,37 +51,72 @@
 # Script version
 vmodver=2.0
 
-# CONFIGURATION
-# -----------------------
+# Directory where configuration files are stored.
+config_dir=/opt/vmodem/config
+
+# Specifies the configuration file to use.
+# initialized at runtime based on the serial port.
+# Do not modify this manually!
+#
+config_file=
+
 # Variable: serport
 # serport specifies which local serial device to use.
 # For example, "ttyUSB0" will tell the script to use
 # to use /dev/ttyUSB0 for communication.
-# Common values: ttyUSB0 or ttyAMA0
+#
+# NOTE: This variable is passed as an argument from systemd
+# and must not be modified within the script.
 #
 serport=${1:-ttyUSB0}
 
-# Variable: baud
-# baud will tell the script to open the serial port at
-# specified symbol rate. When connecting, make sure
-# your client computer uses the same baud than what
-# has been specified here.
-# Common baud rates: 9600, 19200, 38400, 57600
-#
-# Default:
-# baud=57600
-#
-#baud=9600
-#baud=38400
-baud=57600
 
-# Variable: etherp
-# Sets the name of the ethernet device for PPP connections.
-# 
-# eth0 for wired 
-# wlan0 for wireless
-#
-etherp=eth0
+# -----------------------
+# Pre-init Functions
+# -----------------------
+
+# Function: load_config
+# Loads the configuration file for the specified serial port, if it exists.
+load_config () {
+  config_file=$(udevadm info --query=property --name="/dev/$serport" |
+              awk -F'=' -v dir="$config_dir" '/^ID_PATH=/ {print dir "/" $2 ".conf"}')
+
+  if [[ ! -f "${config_file}" ]]; then
+    echo "WARNING: No config file found; will be using defaults." >&2
+    return
+  else
+    source "${config_file}"
+  fi
+}
+
+
+# -----------------------
+# CONFIGURATION
+# -----------------------
+
+# load the configuration file (if it exists)
+load_config
+
+
+# Array: modem_profiles
+# Contains the supported modem profiles.
+# Each entry is in the format:
+# ID|display name|downstream bps|upstream bps|minimum DTE baud
+modem_profiles=(
+  'V21|V.21|300|300|9600'
+  'V22|V.22|1200|1200|9600'
+  'V22BIS|V.22bis|2400|2400|9600'
+  'V32|V.32|9600|9600|19200'
+  'V32BIS|V.32bis|14400|14400|19200'
+  'V34|V.34|28800|28800|38400'
+  'V34BIS|V.34bis|33600|33600|57600'
+  'V90|V.90|56000|33600|115200'
+  'X2|X2|56000|33600|115200'
+  'K56flex|K56flex|56000|33600|115200'
+  'V92|V.92|56000|48000|115200'
+  'ISDN64|ISDN 64k|64000|64000|115200'
+  'ISDN128|ISDN 128k|128000|128000|230400'
+)
 
 # Variable: echoser
 # echoser sets the default behaviour of echoing serial
@@ -104,6 +139,17 @@ resultverbose=1
 # cabable machine such as DOS, you may want to use TERM="ansi"
 #
 TERM="vt100"
+
+# Variable: baud
+# baud specifies the default serial communication speed.
+# If not set, it defaults to 57600.
+: "${baud:=57600}"
+
+# Variable: modem_profile
+# Specifies the default modem profile to use.
+# If not set, it defaults to V34BIS.
+: "${modem_profile:=V34BIS}"
+
 
 # GPIO sound helper
 # -----------------
@@ -135,13 +181,13 @@ fi
 # -----------------
 export serport
 export baud
-export etherp
+export modem_profile
 export TERM
 
 
-# FUNCTIONS
-# ---------
-#
+# -----------------------
+# Functions
+# -----------------------
 
 #INITIALIZE SERIAL SETTINGS
 ttyinit () {
@@ -156,6 +202,28 @@ sendtty () {
   # Prints message in console and over serial. Message is given as first parameter.
   message="$1"
   echo -en "$message" | tee /dev/$serport
+}
+
+# Function: emit_sounds
+# Plays the specified sound using the sound helper, if enabled.
+emit_sound () {
+    [[ "$speaker_mode" == 0 ]] && return 0
+    [[ -f "$soundhelper" ]] || return 0
+
+    case "$1" in
+        dialtone) set -- dialtone "$dialtone_time" ;;
+        dtmf)     set -- dtmf "$2" ;;
+        ringback) set -- ringback "$ringback_cycles" "$ringback_pause" ;;
+        v34)
+          [[ "$speaker_mode" == 3 ]] && return 0
+          python3 "$soundhelper" v34 &
+          sleep 10
+          return
+          ;;
+        *) return 1 ;;
+    esac
+
+    python3 "$soundhelper" "$@"
 }
 
 systeminfo () {
@@ -196,33 +264,119 @@ readtty () {
   done
   local __resultvar=$1
   local result="$line"
-  eval $__resultvar="'$result'"
+  printf -v "$__resultvar" '%s' "$result"
 }
 
-# GPIO SOUND
-# ----------
 
-
-emit_sound () {
-    [[ "$speaker_mode" == 0 ]] && return 0
-    [[ -f "$soundhelper" ]] || return 0
-
-    case "$1" in
-        dialtone) set -- dialtone "$dialtone_time" ;;
-        dtmf)     set -- dtmf "$2" ;;
-        ringback) set -- ringback "$ringback_cycles" "$ringback_pause" ;;
-        v34)
-    		[[ "$speaker_mode" == 3 ]] && return 0
-    		python3 "$soundhelper" v34 &
-		sleep 10
-		return
-		;;
-        *) return 1 ;;
-    esac
-
-    python3 "$soundhelper" "$@"
+find_modem_profile () {
+  local entry id
+  for entry in "${modem_profiles[@]}"; do
+    IFS='|' read -r id profile_name profile_downstream profile_upstream profile_min_baud <<< "$entry"
+    [[ "$id" == "$1" ]] && return 0
+  done
+  return 1
 }
 
+
+modem_configuration () {
+  local selection new_baud new_modem entry id name down up min_baud i
+  local baud_rates=() available_profiles=()
+
+  # Build baud rate list from modem profiles.
+  mapfile -t baud_rates < <(
+    printf '%s\n' "${modem_profiles[@]}" |
+      cut -d'|' -f5 | sort -nu
+  )
+
+  # Baud rate selection.
+  sendtty "\nModem Configuration\n===================\n\n"
+  sendtty "Select Serial Baud Rate\n\n"
+
+  for i in "${!baud_rates[@]}"; do
+    sendtty "$((i + 1)). ${baud_rates[i]}\n"
+  done
+
+  sendtty "0. Cancel\n\nEnter your selection: "
+  readtty selection
+
+  [[ "$selection" == 0 ]] && return
+
+  if [[ ! "$selection" =~ ^[1-9][0-9]*$ ]] ||
+     (( selection > ${#baud_rates[@]} )); then
+    sendtty "Invalid selection.\n"
+    return
+  fi
+
+  new_baud=${baud_rates[selection-1]}
+
+  # Modem profile selection.
+  sendtty "\nSelect Modem Emulation\n\n"
+
+  for entry in "${modem_profiles[@]}"; do
+    IFS='|' read -r id name down up min_baud <<< "$entry"
+
+    if (( new_baud >= min_baud )); then
+      available_profiles+=("$id")
+      sendtty "${#available_profiles[@]}. $name ($down/$up bps)\n"
+    fi
+  done
+
+  sendtty "0. Cancel\n\nEnter your selection: "
+  readtty selection
+
+  [[ "$selection" == 0 ]] && return
+
+  if [[ ! "$selection" =~ ^[1-9][0-9]*$ ]] ||
+     (( selection > ${#available_profiles[@]} )); then
+    sendtty "Invalid selection.\n"
+    return
+  fi
+
+  new_modem=${available_profiles[selection-1]}
+
+  # Save only if the configuration changed.
+  if [[ "$new_baud" == "$baud" && "$new_modem" == "$modem_profile" ]]; then
+    sendtty "Configuration unchanged.\n"
+    return
+  fi
+
+  if ! save_config "$new_baud" "$new_modem"; then
+    sendtty "Cannot save configuration.\n"
+    return
+  fi
+
+  sendtty "\nConfiguration saved successfully.\n\n"
+  sendtty "The virtual modem session will restart shortly\n"
+  sendtty "to apply the new settings.\n\n"
+  sendtty "If the serial baud rate has changed, please\n"
+  sendtty "configure your terminal to use the new speed.\n\n"
+
+  # extra wait time for user to read the message before restarting
+  # note: systemd adds another 5 seconds (RestartSec=5)
+  sleep 5
+
+  exit 75
+}
+
+
+# Function: save_config
+# Saves the new baud rate and modem profile to the configuration file.
+#
+# FIXME: could be a bit more sophisticated here,
+# for example, use a temporary file and atomic move to avoid partial writes.
+save_config () {
+  mkdir -p "$config_dir" || return 1
+
+  printf 'baud=%s\nmodem_profile=%s\n' "$1" "$2" > "$config_file"
+}
+
+
+
+# -----------------------
+# Main
+# -----------------------
+
+# export the tty functions
 export -f sendtty
 export -f readtty
 export -f ttyinit
@@ -569,11 +723,9 @@ while [ "$continue" != "1" ]; do
       sendtty "AT.........Tests serial connection, prints OK if successful\n"
       sendtty "ATE0/ATE1..Switch terminal echo 0-off or 1-on\n"
       sendtty "ATD#.......Run #.sh, or ppp.sh if no matching script exists\n"
-      sendtty "ATI........Display system uptime and network IP addresses\n"
+      sendtty "ATI........Display system information\n"
       sendtty "ATM0-3.....Control virtual modem speaker\n"
       sendtty "ATZ........Reset modem settings\n"
-      sendtty "\n"
-      sendtty "Dial any number for PPP unless a matching number script exists.\n"
       sendtty "\n"
       sendtty "READY.\n"
     fi
@@ -584,14 +736,21 @@ while [ "$continue" != "1" ]; do
         sendtty "\n"
         sendtty "System Setup\n"
         sendtty "============\n"
-        sendtty "1. Change Wireless Network settings\n"
-        sendtty "2. Exit\n"
+        find_modem_profile "$modem_profile"
+        sendtty "\nCurrent Modem Configuration\n"
+        sendtty "Baud Rate : $baud\n"
+        sendtty "Emulation : $profile_name ($profile_downstream/$profile_upstream bps)\n\n"
+        sendtty "1. Modem Configuration\n"
+        sendtty "2. Wi-Fi Settings\n"
+        sendtty "3. Exit\n\n"
         sendtty "Enter your selection: "
         # Read user input
         readtty selection
 
-        # Wireless network settings
         if [[ "$selection" == "1" ]]; then
+          modem_configuration
+        # Wireless network settings
+        elif [[ "$selection" == "2" ]]; then
           while true; do
             sendtty "\n"
             sendtty "Wi-Fi Settings\n"
@@ -642,7 +801,7 @@ while [ "$continue" != "1" ]; do
             fi
           done
         # Exit
-        elif [[ "$selection" == "2" ]]; then
+        elif [[ "$selection" == "3" ]]; then
           sendtty "Exited setup\n"
           sendtty "READY.\n"
           break

@@ -17,7 +17,7 @@ set -euo pipefail
 
 PROJECT_DIR=/opt/vmodem
 SOURCE_SCRIPT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-GITHUB_RAW=https://raw.githubusercontent.com/gpdm/TPC-VModem/main
+GITHUB_RAW=https://raw.githubusercontent.com/gpdm/TPC-VModem/refs/heads/v2/
 PIGPIOD_OVERRIDE_FILE=/etc/systemd/system/pigpiod.service.d/zz-tpc-vmodem.conf
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -25,10 +25,13 @@ fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 move_setup() {
     echo '[1/5] Preparing installation directory'
     mkdir -p "$PROJECT_DIR"
+    mkdir -p "$PROJECT_DIR/config"
+
     if [[ "$SOURCE_SCRIPT" != "$PROJECT_DIR/setup.sh" ]]; then
         mv -f -- "$SOURCE_SCRIPT" "$PROJECT_DIR/setup.sh" || fail 'Could not move setup.sh.'
         echo "Moved setup.sh to $PROJECT_DIR"
     fi
+
     cd -- "$PROJECT_DIR"
     echo "Installation directory: $PROJECT_DIR"
 }
@@ -81,9 +84,11 @@ check_dependencies() {
     command -v systemctl >/dev/null 2>&1 || fail 'systemd is required.'
 
     # Check everything once, then install all missing packages together.
+    # format is: program:package
     for entry in python3:python3 pigpiod:pigpio pppd:ppp \
                  iptables:iptables xxd:xxd stty:coreutils sysctl:procps \
-                 /usr/lib/cni/host-local:containernetworking-plugins jq:jq; do
+                 /usr/lib/cni/host-local:containernetworking-plugins \
+                 tc:iproute2 jq:jq wpa_cli:wpasupplicant; do
         program=${entry%%:*}
         package=${entry#*:}
         command -v "$program" >/dev/null 2>&1 || needed+=("$package")
@@ -92,12 +97,6 @@ check_dependencies() {
     if ! command -v python3 >/dev/null 2>&1 || \
        ! python3 -c 'import pigpio' >/dev/null 2>&1; then
         needed+=(python3-pigpio)
-    fi
-
-    # Wi-Fi tools are needed only when vmodem.sh is configured for wlan0.
-    if grep -Eq '^[[:space:]]*etherp=wlan0([[:space:]]|$)' "$PROJECT_DIR/vmodem.sh" && \
-       ! command -v wpa_cli >/dev/null 2>&1; then
-        needed+=(wpasupplicant)
     fi
 
     if ((${#needed[@]})); then
