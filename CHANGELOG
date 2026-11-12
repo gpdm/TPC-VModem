@@ -14,6 +14,7 @@
 * implemented port-bound support for baud & emulation profiles
 * added default_speaker_mode to enforce ATM0 for ISDN emulation
 * did some code cleanups and reorganization in vmodem.sh
+* implemented traffic shaper
 
 Note: this release does still use the non-daemonized sound.py.
 There's no checking for race conditions for PWM audio output

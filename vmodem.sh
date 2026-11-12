@@ -435,7 +435,7 @@ systeminfo () {
 
   sendtty "\nCurrent Modem Settings:\n"
   sendtty "Baud rate: $baud\n"
-  sendtty "Modem profile: $modem_profile\n"
+  sendtty "Modem profile: $modem_profile ($profile_downstream/$profile_upstream bps)\n"
 }
 
 
@@ -445,8 +445,15 @@ systeminfo () {
 find_modem_profile () {
   local entry id
   for entry in "${modem_profiles[@]}"; do
-    IFS='|' read -r id profile_name profile_downstream profile_upstream profile_min_baud <<< "$entry"
-    [[ "$id" == "$1" ]] && return 0
+    IFS='|' read -r id name down up min_baud <<< "$entry"
+
+    if [[ "$id" == "$modem_profile" ]]; then
+      profile_name=$name
+      profile_downstream=$down
+      profile_upstream=$up
+      profile_min_baud=$min_baud
+      return 0
+    fi
   done
   return 1
 }
@@ -558,6 +565,9 @@ save_config () {
 export -f sendtty
 export -f readtty
 export -f ttyinit
+
+# resolve the current modem profile based on the configuration
+find_modem_profile "$modem_profile"
 
 # Open serial port for use. Allocate file descriptor
 # and treat the serial port as a file.
@@ -701,7 +711,10 @@ while [ "$continue" != "1" ]; do
           echo -en "\x1b[20h" > /dev/$serport
 
           # Run the selected service. vmodem waits here until it returns.
-          speaker_mode="$speaker_mode" "$dialscript"
+          speaker_mode="$speaker_mode" \
+          profile_downstream="$profile_downstream" \
+          profile_upstream="$profile_upstream" \
+            "$dialscript"
 
           if [[ $carrierdetect == 1 ]]; then exec 99<>/dev/$serport; fi
 
@@ -762,7 +775,6 @@ while [ "$continue" != "1" ]; do
         sendtty "\n"
         sendtty "System Setup\n"
         sendtty "============\n"
-        find_modem_profile "$modem_profile"
         sendtty "\nCurrent Modem Configuration\n"
         sendtty "Baud Rate : $baud\n"
         sendtty "Emulation : $profile_name ($profile_downstream/$profile_upstream bps)\n\n"

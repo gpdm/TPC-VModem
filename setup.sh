@@ -62,7 +62,7 @@ check_scripts() {
     local missing=() script
     for script in vmodem.sh ppp.sh sound.py ppp_noise.py ipam.json \
                   vmodem@.service vmodem-network.sh vmodem-network.service \
-                  99-vmodem.rules v34_sound_v2.bin.gz; do
+                  99-vmodem.rules vmodem-shaper.sh v34_sound_v2.bin.gz; do
         [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
     done
     if ((${#missing[@]})); then
@@ -188,6 +188,10 @@ install_vmodem_services() {
     udevadm trigger --action=add --subsystem-match=tty --sysname-match='ttyACM*' ||
         fail 'Could not trigger existing ttyACM devices.'
     echo 'Dynamic VModem service template and udev rules installed'
+
+    # install ppp if-up/if-down hooks for VModem traffic shaping
+    ln -sfn $PROJECT_DIR/vmodem-shaper.sh /etc/ppp/ip-up.d/zz-vmodem-shaper
+    ln -sfn $PROJECT_DIR/vmodem-shaper.sh /etc/ppp/ip-down.d/00-vmodem-shaper    
 }
 
 (($# == 0)) || fail 'Usage: sudo bash setup.sh'

@@ -134,6 +134,7 @@ pppd noauth nodetach local lock \
   lcp-echo-interval $lcpidle lcp-echo-failure 3 \
   proxyarp ms-dns 8.8.4.4 ms-dns 8.8.8.8 \
   "10.0.100.1:$remote_ip" \
+  ipparam "$profile_downstream:$profile_upstream" \
   record "$recordfifo" \
   /dev/$serport $baud
 
