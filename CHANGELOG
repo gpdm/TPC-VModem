@@ -17,6 +17,8 @@
 * implemented traffic shaper
 * extended ppp.sh to emit tc status every 60 seconds
 * implemented common `vmodem` journald namespace with 100 MB limit
+* added new configuration menu to allow persistent changes to
+  baud rates, modem emulation, PPP settings, and more
 
 Note: this release does still use the non-daemonized sound.py.
 There's no checking for race conditions for PWM audio output

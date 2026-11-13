@@ -20,14 +20,6 @@
 # - Make sure DNS servers are defined (add ms-dns 1.2.3.4 twice)
 #
 
-# Variable: lcpidle
-# Specifies the idle timeout period in seconds for lcp-echo-interval.
-# This is to ensure that pppd will not run indefinitely after sudden
-# hangup and will relinquish control back to the vmodem.sh.
-#
-# Default:    lcpidle=5
-lcpidle=10
-
 # PPP record stream
 # pppd writes its live serial record stream into this FIFO. The noise
 # reader must keep draining the FIFO for the whole PPP session, even
@@ -35,6 +27,8 @@ lcpidle=10
 recordfifo="/run/tpc-vmodem-ppp-$$.fifo"
 noisereader="./ppp_noise.py"
 recordpid=
+pppd_pid=
+monitorpid=
 
 # CNI host-local assigns one remote IP per PPP session.
 ipam_config="/opt/vmodem/ipam.json"
@@ -59,6 +53,18 @@ ipam_command () {
 # Cleans up the PPP record FIFO and releases the CNI IP reservation on exit.
 #
 exit_handler () {
+  # Stop the PPP daemon if this script exits while the session is active.
+  if [[ -n "$pppd_pid" ]] && kill -0 "$pppd_pid" 2>/dev/null; then
+    kill "$pppd_pid" 2>/dev/null
+    wait "$pppd_pid" 2>/dev/null
+  fi
+
+  # Stop the traffic statistics monitor.
+  if [[ -n "$monitorpid" ]]; then
+    kill "$monitorpid" 2>/dev/null
+    wait "$monitorpid" 2>/dev/null
+  fi
+
   # Stop the record reader if it is still running.
   if [[ -n "$recordpid" ]] && kill -0 "$recordpid" 2>/dev/null; then
     kill "$recordpid" 2>/dev/null
@@ -108,45 +114,72 @@ sendtty  "Starting pppd...\n"
 sendtty  "PPP>"
 # End of fake login prompt.
 
-# Create the record FIFO before pppd starts.
-rm -f "$recordfifo"
-if ! mkfifo "$recordfifo"; then
-  printf "\nUnable to create PPP record FIFO.\n"
-  exit 1
-fi
+# Optional PPP parameters, empty values add no pppd argument.
+pppd_proxyarp=
+pppd_debug=
+[[ "${option_proxyarp:-0}" == 1 ]] && pppd_proxyarp=proxyarp
+[[ "${option_debug:-0}" == 1 ]] && pppd_debug=debug
 
-# Start the record reader first.
-# It will block on the FIFO until pppd opens the write side.
-[[ -f "$noisereader" ]] || speaker_mode=0
-case "${speaker_mode:-0}" in
-    1|2)
-	    python3 "$noisereader" "$recordfifo" &
-	    ;;
-    *)
-      cat "$recordfifo" >/dev/null &
-      ;;
-esac
-recordpid=$!
+# Only record the PPP stream when modem audio is enabled.
+pppd_record_options=()
+if [[ "${option_ppp_record:-0}" == 1 ]]; then
+  if [[ -f "$noisereader" ]]; then
+    if ! mkfifo "$recordfifo"; then
+      printf 'ERROR: Unable to create PPP record FIFO.\n' >&2
+      exit 1
+    fi
+
+    # The reader must start before pppd opens the FIFO.
+    python3 "$noisereader" "$recordfifo" &
+    recordpid=$!
+    pppd_record_options=(record "$recordfifo")
+  else
+    printf 'WARNING: PPP noise reader missing; recording disabled.\n' >&2
+  fi
+fi
 
 # Run PPP daemon and establish a link.
 pppd noauth nodetach local lock \
-  lcp-echo-interval $lcpidle lcp-echo-failure 3 \
-  proxyarp ms-dns 8.8.4.4 ms-dns 8.8.8.8 \
+  $pppd_proxyarp $pppd_debug \
+  lcp-echo-interval "$lcp_echo_interval" lcp-echo-failure "$lcp_echo_failure" \
+  ms-dns "$dns_primary" ms-dns "$dns_secondary" \
   "10.0.100.1:$remote_ip" \
   ipparam "$profile_downstream:$profile_upstream" \
-  record "$recordfifo" \
-  /dev/$serport $baud &
+  "${pppd_record_options[@]}" \
+  "/dev/$serport" "$baud" &
 pppd_pid=$!
 
-# Monitor traffic shaping while PPP is running.
-while kill -0 "$pppd_pid" 2>/dev/null; do
-  printf "Traffic Shaper Status:\n"
-  tc -s qdisc show dev ppp0
-  tc -s qdisc show dev ifbppp0
-  sleep 60
-done
+# Monitor the current session's PPP interface, if enabled.
+if [[ "${option_tcstatus:-1}" == 1 ]]; then
+  (
+    # Wait until IPCP assigns the remote IP, then resolve the interface once.
+    iface=
+    while kill -0 "$pppd_pid" 2>/dev/null && [[ -z "$iface" ]]; do
+      iface=$(ip -o -4 addr show | awk -v peer="$remote_ip" \
+        '$0 ~ (" peer " peer "/") && $2 ~ /^ppp[0-9]+$/ {print $2; exit}')
+      [[ -n "$iface" ]] || sleep 1
+    done
 
+    # Keep using the same interface throughout this PPP session.
+    while [[ -n "$iface" ]] && kill -0 "$pppd_pid" 2>/dev/null; do
+      printf 'Traffic Shaper Status (%s):\n' "$iface"
+      tc -s qdisc show dev "$iface"
+      tc -s qdisc show dev "ifb$iface"
+      sleep "${tc_status_interval:-60}"
+    done
+  ) &
+  monitorpid=$!
+fi
+
+# Wait for the connection to end, then stop monitoring immediately.
 wait "$pppd_pid"
 pppd_status=$?
+pppd_pid=
 
-printf "\nPPP link terminated with status $pppd_status.\n"
+if [[ -n "$monitorpid" ]]; then
+  kill "$monitorpid" 2>/dev/null
+  wait "$monitorpid" 2>/dev/null
+  monitorpid=
+fi
+
+printf "\nPPP link terminated with status %s.\n" "$pppd_status"

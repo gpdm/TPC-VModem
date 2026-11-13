@@ -150,6 +150,16 @@ TERM="vt100"
 # If not set, it defaults to V34BIS.
 : "${modem_profile:=V34BIS}"
 
+# Per-modem PPP configuration
+: "${option_proxyarp:=0}"
+: "${option_debug:=0}"
+: "${option_tcstatus:=1}"
+: "${tc_status_interval:=60}"
+: "${lcp_echo_interval:=10}"
+: "${lcp_echo_failure:=3}"
+: "${dns_primary:=9.9.9.9}"
+: "${dns_secondary:=149.112.112.112}"
+
 
 # GPIO sound helper
 # -----------------
@@ -436,6 +446,14 @@ systeminfo () {
   sendtty "\nCurrent Modem Settings:\n"
   sendtty "* Baud rate: $baud\n"
   sendtty "* Modem profile: $modem_profile ($profile_downstream/$profile_upstream bps)\n"
+
+  sendtty "\nCurrent PPP Settings:\n"
+  sendtty "* Proxy ARP: $([[ "$option_proxyarp" == 1 ]] && echo Enabled || echo Disabled)\n"
+  sendtty "* PPP debug: $([[ "$option_debug" == 1 ]] && echo Enabled || echo Disabled)\n"
+  sendtty "* Traffic statistics: $([[ "$option_tcstatus" == 1 ]] && echo Enabled || echo Disabled) ($tc_status_interval seconds)\n"
+  sendtty "* LCP echo interval: $lcp_echo_interval seconds\n"
+  sendtty "* LCP echo failures: $lcp_echo_failure\n"
+  sendtty "* DNS servers: $dns_primary, $dns_secondary\n"
 }
 
 
@@ -525,7 +543,8 @@ modem_configuration () {
     return
   fi
 
-  if ! save_config "$new_baud" "$new_modem"; then
+  if ! save_config "$new_baud" "$new_modem" "$option_proxyarp" "$option_debug" "$option_tcstatus" \
+      "$tc_status_interval" "$lcp_echo_interval" "$lcp_echo_failure" "$dns_primary" "$dns_secondary"; then
     sendtty "Cannot save configuration.\n"
     return
   fi
@@ -544,15 +563,123 @@ modem_configuration () {
 }
 
 
+# Function: valid_ipv4
+# Accepts a dotted IPv4 address with four decimal octets (0 through 255).
+valid_ipv4 () {
+  local address=$1 octet
+  local -a parts
+  [[ "$address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  IFS=. read -r -a parts <<< "$address"
+  for octet in "${parts[@]}"; do
+    (( ${#octet} <= 3 && 10#$octet <= 255 )) || return 1
+  done
+}
+
+# Function: ppp_configuration
+# Configures and persists optional PPP settings.
+ppp_configuration () {
+  local selection input
+  local new_proxyarp=$option_proxyarp new_debug=$option_debug new_tcstatus=$option_tcstatus
+  local new_tc_interval=$tc_status_interval new_lcp_interval=$lcp_echo_interval
+  local new_lcp_failure=$lcp_echo_failure new_dns_primary=$dns_primary new_dns_secondary=$dns_secondary
+
+  while true; do
+    sendtty "\nPPP Configuration\n=================\n\n"
+    sendtty "1. Proxy ARP           : $([[ "$new_proxyarp" == 1 ]] && echo Enabled || echo Disabled)\n"
+    sendtty "2. PPP Debug           : $([[ "$new_debug" == 1 ]] && echo Enabled || echo Disabled)\n"
+    sendtty "3. Traffic Statistics  : $([[ "$new_tcstatus" == 1 ]] && echo Enabled || echo Disabled)\n"
+    sendtty "4. Statistics Interval : $new_tc_interval seconds\n"
+    sendtty "5. LCP Echo Interval   : $new_lcp_interval seconds\n"
+    sendtty "6. LCP Echo Failures   : $new_lcp_failure\n"
+    sendtty "7. Primary DNS         : $new_dns_primary\n"
+    sendtty "8. Secondary DNS       : $new_dns_secondary\n"
+    sendtty "0. Save and return\n\nEnter your selection: "
+    readtty selection
+
+    case "$selection" in
+      1) (( new_proxyarp = 1 - new_proxyarp )) ;;
+      2) (( new_debug = 1 - new_debug )) ;;
+      3) (( new_tcstatus = 1 - new_tcstatus )) ;;
+      4|5|6)
+        sendtty "Enter new value: "
+        readtty input
+        if [[ "$input" =~ ^[0-9]+$ ]] && (( ${#input} <= 4 )) &&
+           (( (selection == 4 && 10#$input >= 1 && 10#$input <= 3600) ||
+              (selection == 5 && 10#$input <= 3600) ||
+              (selection == 6 && 10#$input <= 100) )); then
+          case "$selection" in
+            4) new_tc_interval=$((10#$input)) ;;
+            5) new_lcp_interval=$((10#$input)) ;;
+            6) new_lcp_failure=$((10#$input)) ;;
+          esac
+        else
+          sendtty "Invalid value. Statistics: 1..3600, LCP interval: 0..3600, failures: 0..100.\n"
+        fi
+        ;;
+      7|8)
+        sendtty "Enter IPv4 address: "
+        readtty input
+        if valid_ipv4 "$input"; then
+          if [[ "$selection" == 7 ]]; then
+            new_dns_primary=$input
+          else
+            new_dns_secondary=$input
+          fi
+        else
+          sendtty "Invalid IPv4 address.\n"
+        fi
+        ;;
+      0) break ;;
+      *) sendtty "Invalid selection.\n" ;;
+    esac
+  done
+
+  if [[ "$new_proxyarp" == "$option_proxyarp" &&
+        "$new_debug" == "$option_debug" &&
+        "$new_tcstatus" == "$option_tcstatus" &&
+        "$new_tc_interval" == "$tc_status_interval" &&
+        "$new_lcp_interval" == "$lcp_echo_interval" &&
+        "$new_lcp_failure" == "$lcp_echo_failure" &&
+        "$new_dns_primary" == "$dns_primary" &&
+        "$new_dns_secondary" == "$dns_secondary" ]]; then
+    sendtty "Configuration unchanged.\n"
+    return
+  fi
+
+  if ! save_config "$baud" "$modem_profile" "$new_proxyarp" "$new_debug" "$new_tcstatus" \
+       "$new_tc_interval" "$new_lcp_interval" "$new_lcp_failure" "$new_dns_primary" "$new_dns_secondary"; then
+    sendtty "Cannot save configuration.\n"
+    return
+  fi
+
+  sendtty "\nConfiguration saved successfully.\n"
+  sendtty "The virtual modem session will restart shortly\n"
+  sendtty "to apply the new settings.\n"
+  sleep 5
+  exit 75
+}
+
+
 # Function: save_config
-# Saves the new baud rate and modem profile to the configuration file.
+# Saves modem and PPP settings to the configuration file.
 #
 # FIXME: could be a bit more sophisticated here,
 # for example, use a temporary file and atomic move to avoid partial writes.
 save_config () {
   mkdir -p "$config_dir" || return 1
 
-  printf 'baud=%s\nmodem_profile=%s\n' "$1" "$2" > "$config_file"
+  cat > "$config_file" <<EOF
+baud=$1
+modem_profile=$2
+option_proxyarp=$3
+option_debug=$4
+option_tcstatus=$5
+tc_status_interval=$6
+lcp_echo_interval=$7
+lcp_echo_failure=$8
+dns_primary=$9
+dns_secondary=${10}
+EOF
 }
 
 
@@ -711,9 +838,22 @@ while [ "$continue" != "1" ]; do
           echo -en "\x1b[20h" > /dev/$serport
 
           # Run the selected service. vmodem waits here until it returns.
+          # Record PPP traffic only when modem audio is requested.
+          option_ppp_record=0
+          [[ "$speaker_mode" == 1 || "$speaker_mode" == 2 ]] && option_ppp_record=1
+
           speaker_mode="$speaker_mode" \
           profile_downstream="$profile_downstream" \
           profile_upstream="$profile_upstream" \
+          option_proxyarp="$option_proxyarp" \
+          option_debug="$option_debug" \
+          option_tcstatus="$option_tcstatus" \
+          tc_status_interval="$tc_status_interval" \
+          lcp_echo_interval="$lcp_echo_interval" \
+          lcp_echo_failure="$lcp_echo_failure" \
+          dns_primary="$dns_primary" \
+          dns_secondary="$dns_secondary" \
+          option_ppp_record="$option_ppp_record" \
             "$dialscript"
 
           if [[ $carrierdetect == 1 ]]; then exec 99<>/dev/$serport; fi
@@ -779,16 +919,19 @@ while [ "$continue" != "1" ]; do
         sendtty "Baud Rate : $baud\n"
         sendtty "Emulation : $profile_name ($profile_downstream/$profile_upstream bps)\n\n"
         sendtty "1. Modem Configuration\n"
-        sendtty "2. Wi-Fi Settings\n"
-        sendtty "3. Exit\n\n"
+        sendtty "2. PPP Configuration\n"
+        sendtty "3. Wi-Fi Settings\n"
+        sendtty "4. Exit\n\n"
         sendtty "Enter your selection: "
         # Read user input
         readtty selection
 
         if [[ "$selection" == "1" ]]; then
           modem_configuration
-        # Wireless network settings
         elif [[ "$selection" == "2" ]]; then
+          ppp_configuration
+        # Wireless network settings
+        elif [[ "$selection" == "3" ]]; then
           while true; do
             sendtty "\n"
             sendtty "Wi-Fi Settings\n"
@@ -839,7 +982,7 @@ while [ "$continue" != "1" ]; do
             fi
           done
         # Exit
-        elif [[ "$selection" == "3" ]]; then
+        elif [[ "$selection" == "4" ]]; then
           sendtty "Exited setup\n"
           sendtty "READY.\n"
           break
