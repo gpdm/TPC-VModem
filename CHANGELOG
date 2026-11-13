@@ -19,6 +19,8 @@
 * implemented common `vmodem` journald namespace with 100 MB limit
 * added new configuration menu to allow persistent changes to
   baud rates, modem emulation, PPP settings, and more
+* added support to toggle DCD mode (default: DCD enabled)
+  (Trumpet Winsock bugfix)
 
 Note: this release does still use the non-daemonized sound.py.
 There's no checking for race conditions for PWM audio output

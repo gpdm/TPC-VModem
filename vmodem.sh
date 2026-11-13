@@ -152,6 +152,7 @@ TERM="vt100"
 
 # Per-modem PPP configuration
 : "${option_proxyarp:=0}"
+: "${option_modem_control:=1}"
 : "${option_debug:=0}"
 : "${option_tcstatus:=1}"
 : "${tc_status_interval:=60}"
@@ -449,6 +450,7 @@ systeminfo () {
 
   sendtty "\nCurrent PPP Settings:\n"
   sendtty "* Proxy ARP: $([[ "$option_proxyarp" == 1 ]] && echo Enabled || echo Disabled)\n"
+  sendtty "* Modem control (DCD): $([[ "$option_modem_control" == 1 ]] && echo Enabled || echo Disabled)\n"
   sendtty "* PPP debug: $([[ "$option_debug" == 1 ]] && echo Enabled || echo Disabled)\n"
   sendtty "* Traffic statistics: $([[ "$option_tcstatus" == 1 ]] && echo Enabled || echo Disabled) ($tc_status_interval seconds)\n"
   sendtty "* LCP echo interval: $lcp_echo_interval seconds\n"
@@ -544,7 +546,7 @@ modem_configuration () {
   fi
 
   if ! save_config "$new_baud" "$new_modem" "$option_proxyarp" "$option_debug" "$option_tcstatus" \
-      "$tc_status_interval" "$lcp_echo_interval" "$lcp_echo_failure" "$dns_primary" "$dns_secondary"; then
+      "$tc_status_interval" "$lcp_echo_interval" "$lcp_echo_failure" "$dns_primary" "$dns_secondary" "$option_modem_control"; then
     sendtty "Cannot save configuration.\n"
     return
   fi
@@ -580,6 +582,7 @@ valid_ipv4 () {
 ppp_configuration () {
   local selection input
   local new_proxyarp=$option_proxyarp new_debug=$option_debug new_tcstatus=$option_tcstatus
+  local new_modem_control=$option_modem_control
   local new_tc_interval=$tc_status_interval new_lcp_interval=$lcp_echo_interval
   local new_lcp_failure=$lcp_echo_failure new_dns_primary=$dns_primary new_dns_secondary=$dns_secondary
 
@@ -593,6 +596,7 @@ ppp_configuration () {
     sendtty "6. LCP Echo Failures   : $new_lcp_failure\n"
     sendtty "7. Primary DNS         : $new_dns_primary\n"
     sendtty "8. Secondary DNS       : $new_dns_secondary\n"
+    sendtty "9. Modem Control (DCD) : $([[ "$new_modem_control" == 1 ]] && echo Enabled || echo Disabled)\n"
     sendtty "0. Save and return\n\nEnter your selection: "
     readtty selection
 
@@ -600,6 +604,7 @@ ppp_configuration () {
       1) (( new_proxyarp = 1 - new_proxyarp )) ;;
       2) (( new_debug = 1 - new_debug )) ;;
       3) (( new_tcstatus = 1 - new_tcstatus )) ;;
+      9) (( new_modem_control = 1 - new_modem_control )) ;;
       4|5|6)
         sendtty "Enter new value: "
         readtty input
@@ -641,13 +646,14 @@ ppp_configuration () {
         "$new_lcp_interval" == "$lcp_echo_interval" &&
         "$new_lcp_failure" == "$lcp_echo_failure" &&
         "$new_dns_primary" == "$dns_primary" &&
-        "$new_dns_secondary" == "$dns_secondary" ]]; then
+        "$new_dns_secondary" == "$dns_secondary" &&
+        "$new_modem_control" == "$option_modem_control" ]]; then
     sendtty "Configuration unchanged.\n"
     return
   fi
 
   if ! save_config "$baud" "$modem_profile" "$new_proxyarp" "$new_debug" "$new_tcstatus" \
-       "$new_tc_interval" "$new_lcp_interval" "$new_lcp_failure" "$new_dns_primary" "$new_dns_secondary"; then
+       "$new_tc_interval" "$new_lcp_interval" "$new_lcp_failure" "$new_dns_primary" "$new_dns_secondary" "$new_modem_control"; then
     sendtty "Cannot save configuration.\n"
     return
   fi
@@ -679,6 +685,7 @@ lcp_echo_interval=$7
 lcp_echo_failure=$8
 dns_primary=$9
 dns_secondary=${10}
+option_modem_control=${11}
 EOF
 }
 
@@ -846,6 +853,7 @@ while [ "$continue" != "1" ]; do
           profile_downstream="$profile_downstream" \
           profile_upstream="$profile_upstream" \
           option_proxyarp="$option_proxyarp" \
+          option_modem_control="$option_modem_control" \
           option_debug="$option_debug" \
           option_tcstatus="$option_tcstatus" \
           tc_status_interval="$tc_status_interval" \

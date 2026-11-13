@@ -26,9 +26,9 @@
 # after it has stopped generating sound.
 recordfifo="/run/tpc-vmodem-ppp-$$.fifo"
 noisereader="./ppp_noise.py"
-recordpid=
+noisereader_pid=
 pppd_pid=
-monitorpid=
+monitor_pid=
 
 # CNI host-local assigns one remote IP per PPP session.
 ipam_config="/opt/vmodem/ipam.json"
@@ -60,15 +60,15 @@ exit_handler () {
   fi
 
   # Stop the traffic statistics monitor.
-  if [[ -n "$monitorpid" ]]; then
-    kill "$monitorpid" 2>/dev/null
-    wait "$monitorpid" 2>/dev/null
+  if [[ -n "$monitor_pid" ]]; then
+    kill "$monitor_pid" 2>/dev/null
+    wait "$monitor_pid" 2>/dev/null
   fi
 
   # Stop the record reader if it is still running.
-  if [[ -n "$recordpid" ]] && kill -0 "$recordpid" 2>/dev/null; then
-    kill "$recordpid" 2>/dev/null
-    wait "$recordpid" 2>/dev/null
+  if [[ -n "$noisereader_pid" ]] && kill -0 "$noisereader_pid" 2>/dev/null; then
+    kill "$noisereader_pid" 2>/dev/null
+    wait "$noisereader_pid" 2>/dev/null
   fi
   rm -f "$recordfifo"
 
@@ -120,6 +120,9 @@ pppd_debug=
 [[ "${option_proxyarp:-0}" == 1 ]] && pppd_proxyarp=proxyarp
 [[ "${option_debug:-0}" == 1 ]] && pppd_debug=debug
 
+# Use DCD carrier detection when modem control is enabled.
+[[ "${option_modem_control:-1}" == 1 ]] && pppd_modem_control=modem || pppd_modem_control=local
+
 # Only record the PPP stream when modem audio is enabled.
 pppd_record_options=()
 if [[ "${option_ppp_record:-0}" == 1 ]]; then
@@ -131,7 +134,7 @@ if [[ "${option_ppp_record:-0}" == 1 ]]; then
 
     # The reader must start before pppd opens the FIFO.
     python3 "$noisereader" "$recordfifo" &
-    recordpid=$!
+    noisereader_pid=$!
     pppd_record_options=(record "$recordfifo")
   else
     printf 'WARNING: PPP noise reader missing; recording disabled.\n' >&2
@@ -139,7 +142,7 @@ if [[ "${option_ppp_record:-0}" == 1 ]]; then
 fi
 
 # Run PPP daemon and establish a link.
-pppd noauth nodetach local lock \
+pppd noauth nodetach "$pppd_modem_control" lock \
   $pppd_proxyarp $pppd_debug \
   lcp-echo-interval "$lcp_echo_interval" lcp-echo-failure "$lcp_echo_failure" \
   ms-dns "$dns_primary" ms-dns "$dns_secondary" \
@@ -168,7 +171,7 @@ if [[ "${option_tcstatus:-1}" == 1 ]]; then
       sleep "${tc_status_interval:-60}"
     done
   ) &
-  monitorpid=$!
+  monitor_pid=$!
 fi
 
 # Wait for the connection to end, then stop monitoring immediately.
@@ -176,10 +179,10 @@ wait "$pppd_pid"
 pppd_status=$?
 pppd_pid=
 
-if [[ -n "$monitorpid" ]]; then
-  kill "$monitorpid" 2>/dev/null
-  wait "$monitorpid" 2>/dev/null
-  monitorpid=
+if [[ -n "$monitor_pid" ]]; then
+  kill "$monitor_pid" 2>/dev/null
+  wait "$monitor_pid" 2>/dev/null
+  monitor_pid=
 fi
 
 printf "\nPPP link terminated with status %s.\n" "$pppd_status"
