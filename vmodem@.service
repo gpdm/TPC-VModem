@@ -8,8 +8,9 @@
 Description=TPC-VModem virtual Hayes modem on /dev/%I
 Requires=pigpiod.service
 Requires=vmodem-network.service
+Requires=vmodem-soundd.service
 BindsTo=dev-%i.device
-After=network.target pigpiod.service vmodem-network.service dev-%i.device
+After=network.target pigpiod.service vmodem-network.service vmodem-soundd.service dev-%i.device
 
 [Service]
 Type=simple

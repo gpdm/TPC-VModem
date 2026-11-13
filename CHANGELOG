@@ -21,6 +21,7 @@
   baud rates, modem emulation, PPP settings, and more
 * added support to toggle DCD mode (default: DCD enabled)
   (Trumpet Winsock bugfix)
+* implement centralized sound daemon to support Multi-DTE setups
 
 Note: this release does still use the non-daemonized sound.py.
 There's no checking for race conditions for PWM audio output

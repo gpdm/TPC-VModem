@@ -63,7 +63,7 @@ check_scripts() {
     for script in vmodem.sh ppp.sh sound.py ppp_noise.py ipam.json \
                   vmodem@.service vmodem-network.sh vmodem-network.service \
                   99-vmodem.rules vmodem-shaper.sh journald@vmodem.conf \
-                  v34_sound_v2.bin.gz; do
+                  vmodem-soundd.service v34_sound_v2.bin.gz; do
         [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
     done
     if ((${#missing[@]})); then
@@ -188,6 +188,7 @@ install_vmodem_services() {
     # install systemd and udev rules for dynamic VModem
     install -m 0644 "$PROJECT_DIR/vmodem@.service" "${systemd_dir}/vmodem@.service"
     install -m 0644 "$PROJECT_DIR/vmodem-network.service" "${systemd_dir}/vmodem-network.service"
+    install -m 0644 "$PROJECT_DIR/vmodem-soundd.service" "${systemd_dir}/vmodem-soundd.service"
     install -m 0644 "$PROJECT_DIR/99-vmodem.rules" "${udev_rules_dir}/99-vmodem.rules"
     systemctl daemon-reload
     udevadm control --reload-rules || fail 'Could not reload udev rules.'
