@@ -65,11 +65,11 @@ check_scripts() {
     find "${PROJECT_DIR}" -maxdepth 1 ! -name 'setup.sh' ! -name '.' -type f -delete
  
     echo refetching current files ...
-    for script in vmodem.sh ppp.sh sound.py ppp_noise.py ipam.json \
+    for script in vmodem.sh ppp.sh ppp_noise.py ipam.json \
                   vmodem@.service vmodem-network.sh vmodem-network.service \
                   99-vmodem.rules vmodem-shaper.sh journald@vmodem.conf \
                   vmodem-soundd.service vmodem-soundd.py v34_sound_v2.bin.gz; do
-        [[ -f "$PROJECT_DIR/$script" ]] && download_scripts ${script}
+        download_scripts ${script}
     done
 
     echo updating permissions ...
@@ -174,10 +174,10 @@ install_vmodem_services() {
 
     # check if legacy vmodem service exists
     echo 'Migrating legacy vmodem.service, if present'
-    if systemctl is-active --quiet vmodem.service; then
+    if systemctl is-active --quiet vmodem.service > /dev/null 2>&1; then
         systemctl stop vmodem.service || fail 'Could not stop legacy vmodem.service.'
     fi
-    if systemctl is-enabled --quiet vmodem.service; then
+    if systemctl is-enabled --quiet vmodem.service > /dev/null 2>&1; then
         systemctl disable vmodem.service || fail 'Could not disable legacy vmodem.service.'
     fi
     [ -f "${systemd_dir}/vmodem.service" ] && rm -f "${systemd_dir}/vmodem.service"

@@ -24,6 +24,7 @@
 * implemented centralized vmodem-soundd daemon to support Multi-DTE setups
 * implemented silent mode support in vmodem-soundd to support silent dial-in
 * adapted vmodem.sh to use vmodem-soundd instead of sound.py
+* removed sound.py
 
 Note: this release does still use the non-daemonized sound.py.
 There's no checking for race conditions for PWM audio output
