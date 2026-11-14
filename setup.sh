@@ -68,7 +68,8 @@ check_scripts() {
     for script in vmodem.sh ppp.sh ppp_noise.py ipam.json \
                   vmodem@.service vmodem-network.sh vmodem-network.service \
                   99-vmodem.rules vmodem-shaper.sh journald@vmodem.conf \
-                  vmodem-soundd.service vmodem-soundd.py v34_sound_v2.bin.gz; do
+                  vmodem-soundd.service vmodem-soundd.py vmodem-soundctl.sh \
+	          v34_sound_v2.bin.gz; do
         download_scripts ${script}
     done
 
