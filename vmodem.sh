@@ -536,7 +536,7 @@ systeminfo () {
     sendtty "Could not read network interfaces.\n"
     return 1
   fi
-  interfaces=$(printf '* %s\n' "$interfaces" | awk '$1 != "lo" && $1 != "lo0"')
+  interfaces=$(printf '%s\n' "$interfaces" | awk '$1 != "lo" && $1 != "lo0" { print "* " $0 }')
   sendtty "$interfaces\n"
 
   sendtty "\nCurrent Modem Settings:\n"
