@@ -11,7 +11,7 @@ TPC-VModem takes that idea further.
 The goal is not only to make the connection work, but to make it feel a little more like using a real modem, that is *with sound*!
 
 And what's more fun than a Raspberry Pi emulating one modem?
-Right, a Raspberry Pi emulating many modems!
+Right, *a Raspberry Pi emulating many modems*!
 
 ## Architecture
 
@@ -79,7 +79,8 @@ And yes, *ATM* commands are fully honored.
 | `ATM2` | Yes | Yes | Yes | Yes | Continuous* |
 | `ATM3` | No | No | Yes | Yes | No |
 
-*Continuous PPP line noise is only available with one active modem on Raspberry Pi 2 or newer. With multiple modems, PPP line noise audio is limited to 2 seconds. Raspberry Pi 1 uses a precomputed cache for performance reasons.
+*Continuous PPP line noise is only available with one active modem on Raspberry Pi 2 or newer. With multiple modems, PPP line noise audio is limited to 2 seconds, even in ATM2 mode.
+Raspberry Pi 1 uses a precomputed cache for performance reasons.
 
 ISDN profiles do not generate analog modem audio, regardless of the ATM setting (ATM0 is enforced).
 
@@ -100,9 +101,8 @@ python3 /opt/vmodem/vmodem-soundd.py --daemon
 python3 /opt/vmodem/vmodem-soundd.py --prepare-noise-cache
 ```
 
-The first runs the server in the foreground (normally started by systemd). The second prepares the PPP noise cache for Raspberry Pi 1. Running without arguments displays the command help.
-
-Use `ATI` to display system uptime, network interfaces and the current modem settings. `HELP` lists the supported commands.
+The first runs the server in the foreground (normally started by systemd).
+The second prepares the PPP noise cache for Raspberry Pi 1.
 
 ## Changes From Original VModem
 
@@ -234,7 +234,15 @@ The script installs the project into `/opt/vmodem`, downloads the required files
 
 ## Configuration
 
-Most settings can be changed from the serial terminal. Just type `SETUP` at the modem prompt. There is normally no need to edit the hardcoded defaults in `vmodem.sh` or `ppp.sh`.
+Most settings can be changed from the serial terminal. 
+
+Use `ATI` to display system uptime, network interfaces and the current modem settings.
+`HELP` lists the supported commands.
+Type `SETUP` at the modem prompt to enter config mode.
+
+There is normally no need to edit the hardcoded defaults in `vmodem.sh` or `ppp.sh`.
+All relevant options are available through the `SETUP` menu.
+
 
 ```text
 System Setup
