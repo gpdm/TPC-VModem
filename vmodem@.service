@@ -17,6 +17,7 @@ Type=simple
 WorkingDirectory=/opt/vmodem
 ExecStart=/bin/bash /opt/vmodem/vmodem.sh %I
 Restart=on-failure
+RestartForceExitStatus=SIGHUP
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
