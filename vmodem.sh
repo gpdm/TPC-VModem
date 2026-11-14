@@ -525,6 +525,13 @@ emit_fx_dialup () {
 
         soundd_command "RINGBACK $ringback_cycles $ringback_pause $ring_mode" || status=$?
         if (( status == 0 )); then
+            # NOTE: this is already prepared for GH Issue #7
+            # to support additional handshake types in the future.
+            # Once those are implemented, we can simply pass
+            # the handshake type through $profile_name
+            #
+            # #### soundd_command "HANDSHAKE $profile_name $handshake_mode" || status=$?
+            #
             soundd_command "HANDSHAKE V34 $handshake_mode" || status=$?
         fi
     fi
@@ -776,12 +783,6 @@ ppp_configuration () {
     sendtty "Cannot save configuration.\n"
     return
   fi
-
-  sendtty "\nConfiguration saved successfully.\n"
-  sendtty "The virtual modem session will restart shortly\n"
-  sendtty "to apply the new settings.\n"
-  sleep 5
-  exit 75
 }
 
 

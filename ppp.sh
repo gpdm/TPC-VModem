@@ -106,7 +106,6 @@ fi
 # Windows 95 and 98 will not care for a login shell
 # unless specifically told to expect one.
 #
-sleep 2
 sendtty "\n\n`uname -sn`****\n\n"
 sendtty  "Username: "; sleep 1; sendtty "\n"
 sendtty  "Password: "; sleep 1; sendtty "\n"
