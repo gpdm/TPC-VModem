@@ -15,9 +15,7 @@ After=network.target pigpiod.service vmodem-network.service vmodem-soundd.servic
 [Service]
 Type=simple
 WorkingDirectory=/opt/vmodem
-#ExecStart=/bin/bash /opt/vmodem/vmodem.sh %I
-# push vmodem into subshell
-ExecStart=/bin/bash -c '/bin/bash /opt/vmodem/vmodem.sh "$1" & wait $!' _ %I
+ExecStart=/bin/bash /opt/vmodem/vmodem.sh %I
 Restart=on-failure
 RestartForceExitStatus=SIGHUP
 RestartSec=5
