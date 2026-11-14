@@ -412,7 +412,15 @@ def perform(conn, pi, request):
     if not fields:
         reply(conn, "ERROR EMPTY_COMMAND")
         return False
+
+    # The output mode is optional for compatibility with existing clients.
+    # SILENT preserves the duration without generating waves or touching GPIO.
+    mode = "AUDIBLE"
+    if fields[-1].upper() in ("AUDIBLE", "SILENT"):
+        mode = fields.pop().upper()
+    audible = mode == "AUDIBLE"
     command = fields[0].upper()
+
     try:
         if command == "TONE" and len(fields) == 3:
             frequency = float(fields[1])
@@ -421,27 +429,46 @@ def perform(conn, pi, request):
                 raise ValueError("frequency must be between 20 and 20000 Hz")
             if not (math.isfinite(duration) and 0 <= duration <= 60):
                 raise ValueError("duration must be between 0 and 60 seconds")
-            tone(pi, frequency, duration)
+            if audible:
+                tone(pi, frequency, duration)
+            else:
+                wait(duration)
         elif command == "DIALTONE" and len(fields) == 2:
             duration = float(fields[1])
             if not math.isfinite(duration) or not 0 <= duration <= 60:
                 raise ValueError("duration must be between 0 and 60 seconds")
-            tone(pi, DIALTONE_FREQ, duration)
+            if audible:
+                tone(pi, DIALTONE_FREQ, duration)
+            else:
+                wait(duration)
         elif command == "DTMF" and len(fields) == 2:
             digits = fields[1]
             if len(digits) > 64 or any(d not in DTMF for d in digits):
                 raise ValueError("invalid DTMF digits")
-            play_dtmf(pi, digits)
+            if audible:
+                play_dtmf(pi, digits)
+            else:
+                # play_dtmf also waits one DTMF_GAP after the final digit.
+                wait(len(digits) * (DTMF_TIME + DTMF_GAP))
         elif command == "RINGBACK" and len(fields) == 3:
             cycles = int(fields[1])
             pause = float(fields[2])
             if not 1 <= cycles <= 20 or not math.isfinite(pause) or not 0 <= pause <= 30:
                 raise ValueError("invalid ringback parameters")
-            play_ringback(pi, cycles, pause)
+            if audible:
+                play_ringback(pi, cycles, pause)
+            else:
+                # No pause after the final ring.
+                wait(cycles * RINGBACK_TONE_SECONDS + (cycles - 1) * pause)
         elif command == "HANDSHAKE" and len(fields) == 2:
             if fields[1].upper() != "V34":
                 raise ValueError("unsupported handshake profile")
-            play_v34(pi)
+            if audible:
+                play_v34(pi)
+            else:
+                # The cached sample count defines the exact intended duration.
+                sample_rate, count, _ = load_v34_cache()
+                wait(count / sample_rate)
             if not active():
                 raise ClientDisconnected()
             # The handshake is the last audio step. Release immediately.

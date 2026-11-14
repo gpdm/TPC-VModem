@@ -162,11 +162,8 @@ TERM="vt100"
 : "${dns_secondary:=149.112.112.112}"
 
 
-# GPIO sound helper
-# -----------------
-# The helper is optional. If it is missing or fails, modem operation
-# continues without sound.
-soundhelper="./sound.py"
+# Audio daemon socket. The daemon exclusively owns GPIO18.
+audio_socket="/run/vmodem/sound.sock"
 noisehelper="./ppp_noise.py"
 noisecache="ppp_noise_cache_v1.json.gz"
 
@@ -291,18 +288,22 @@ dohayes () {
   # - M2 Speaker always on
   # - M3 Speaker off while dialing
   if [[ $hcmd == 'M' ]]; then
-    if [[ $hparm == '' || $hparm == '1' ]]; then
-      speaker_mode=1
-      result=0
-    fi
+    # ATM0
     if [[ $hparm == '0' ]]; then
       speaker_mode=0
       result=0
     fi
+    # ATM1
+    if [[ $hparm == '' || $hparm == '1' ]]; then
+      speaker_mode=1
+      result=0
+    fi
+    # ATM2
     if [[ $hparm == '2' ]]; then
       speaker_mode=2
       result=0
     fi
+    # ATM3
     if [[ $hparm == '3' ]]; then
       speaker_mode=3
       result=0
@@ -402,27 +403,121 @@ dohayes () {
 }
 
 
-# Function: emit_sounds
-# Plays the specified sound using the sound helper, if enabled.
-emit_sound () {
-    [[ "$speaker_mode" == 0 ]] && return 0
-    [[ -f "$soundhelper" ]] || return 0
-
-    case "$1" in
-        dialtone) set -- dialtone "$dialtone_time" ;;
-        dtmf)     set -- dtmf "$2" ;;
-        ringback) set -- ringback "$ringback_cycles" "$ringback_pause" ;;
-        v34)
-          [[ "$speaker_mode" == 3 ]] && return 0
-          python3 "$soundhelper" v34 &
-          sleep 10
-          return
-          ;;
-        *) return 1 ;;
-    esac
-
-    python3 "$soundhelper" "$@"
+# Function: soundd_disconnect
+# Close the socket and release any held lease if this client disappears.
+soundd_disconnect () {
+  if [[ -n "${audio_write_fd:-}" ]]; then
+    exec {audio_write_fd}>&-
+    audio_write_fd=
+  fi
+  if [[ -n "${audio_read_fd:-}" ]]; then
+    exec {audio_read_fd}<&-
+    audio_read_fd=
+  fi
+  if [[ -n "${audio_orig_write_fd:-}" ]]; then
+    exec {audio_orig_write_fd}>&-
+    audio_orig_write_fd=
+  fi
+  if [[ -n "${audio_orig_read_fd:-}" ]]; then
+    exec {audio_orig_read_fd}<&-
+    audio_orig_read_fd=
+  fi
+  if [[ -n "${audio_pid:-}" ]]; then
+    wait "$audio_pid" 2>/dev/null || true
+    audio_pid=
+  fi
 }
+
+# Function: soundd_connect
+# Keep one socket open for the complete dial sequence and its lease.
+soundd_connect () {
+  if [[ ! -S "$audio_socket" ]]; then
+    echo "ERROR: Audio daemon socket unavailable: $audio_socket" >&2
+    return 1
+  fi
+
+  coproc AUDIO_SOCKET { socat - "UNIX-CONNECT:$audio_socket"; }
+  audio_pid=$AUDIO_SOCKET_PID
+  audio_orig_read_fd=${AUDIO_SOCKET[0]}
+  audio_orig_write_fd=${AUDIO_SOCKET[1]}
+  exec {audio_read_fd}<&"$audio_orig_read_fd"
+  exec {audio_write_fd}>&"$audio_orig_write_fd"
+  exec {audio_orig_read_fd}<&-
+  exec {audio_orig_write_fd}>&-
+  audio_orig_read_fd=
+  audio_orig_write_fd=
+}
+
+# Function: soundd_command
+# The response is stored in soundd_response without a subshell.
+soundd_command () {
+  soundd_response=
+  if ! printf '%s\n' "$1" >&"$audio_write_fd" ||
+     ! IFS= read -r -t 180 soundd_response <&"$audio_read_fd"; then
+    echo "ERROR: Audio daemon communication failed." >&2
+    return 1
+  fi
+
+  case "$soundd_response" in
+    OK|DONE|RELEASED) return 0 ;;
+    BUSY) return 3 ;;
+    *) echo "ERROR: Audio daemon replied: $soundd_response" >&2; return 1 ;;
+  esac
+}
+
+# Function: emit_sound
+# Acquire atomically, play the complete dial sequence, then release before PPP.
+# Return 3 for BUSY, 1 for an audio failure, 0 on success.
+emit_sound () {
+  local digits=$1 status=0
+  local dial_mode=AUDIBLE
+  local ring_mode=AUDIBLE
+  local handshake_mode=AUDIBLE
+
+  # ISDN does not emit analog modem audio.
+  [[ "$modem_profile" == ISDN* ]] && return 0
+
+  # set non-audible modes based on speaker_mode
+  case "$speaker_mode" in
+      # ATM0
+      0) dial_mode=SILENT; ring_mode=SILENT; handshake_mode=SILENT ;;
+      # ATM3
+      3) dial_mode=SILENT ;;
+  esac
+
+  # initialize soundd connection
+  soundd_connect || return 1
+
+  # acquire exclusive lease
+  soundd_command ACQUIRE || status=$?
+
+  if (( status == 0 )); then
+    soundd_command "DIALTONE $dialtone_time $dial_mode" || status=$?
+    if (( status == 0 )); then
+      soundd_command "DTMF $digits $dial_mode" || status=$?
+    fi
+
+    if (( status == 0 )); then
+        [[ "$resultverbose" == 1 ]] && sendtty "RINGING\n"
+
+        soundd_command "RINGBACK $ringback_cycles $ringback_pause $ring_mode" || status=$?
+        if (( status == 0 )); then
+            soundd_command "HANDSHAKE V34 $handshake_mode" || status=$?
+        fi
+    fi
+
+    # Explicit release only if the handshake did not release the lease.
+    if [[ "$soundd_response" != RELEASED ]]; then
+      soundd_command RELEASE >/dev/null || status=1
+    fi
+  fi
+
+  soundd_disconnect
+  return "$status"
+}
+
+# Close any active socket if the modem process exits unexpectedly.
+trap soundd_disconnect EXIT
 
 
 # Function: systeminfo
@@ -818,59 +913,60 @@ while [ "$continue" != "1" ]; do
 
       # ATD Dial number
       if [[ ! -z "$number" ]]; then
-        # Dialtone starts when ATD arrives, then gives way to DTMF.
-        emit_sound dialtone
-        emit_sound dtmf "$number"
+        # Acquire before any sound. BUSY must not start PPP.
+        audio_status=0
+        emit_sound "$number" || audio_status=$?
+        if (( audio_status == 0 )); then
+          # A number-specific script wins. Everything else is handled
+          # by the default PPP service.
+          if [ -f "$number.sh" ]; then
+            dialscript="./$number.sh"
+          else
+            dialscript="./ppp.sh"
+          fi
 
-        if [[ $resultverbose == 1 ]]; then sendtty "RINGING\n"; fi
+          if [ -f "$dialscript" ]; then
+            if [[ $resultverbose == 1 ]]; then sendtty "CONNECT $baud\n"; else sendtty "1\n"; fi
 
-        emit_sound ringback
-        emit_sound v34
+            # Assert DCD when carrier detection is turned on (for Trumpet Winsock)
+            if [[ $carrierdetect == 1 ]]; then exec 99>&-; fi
 
-        # A number-specific script wins. Everything else is handled
-        # by the default PPP service.
-        if [ -f "$number.sh" ]; then
-          dialscript="./$number.sh"
+            # Tell the terminal to use CR/LF for newlines instead of just CR.
+            echo -en "\x1b[20h" > /dev/$serport
+
+            # Run the selected service. vmodem waits here until it returns.
+            # Record PPP traffic only when modem audio is requested.
+            option_ppp_record=0
+            [[ "$speaker_mode" == 1 || "$speaker_mode" == 2 ]] && option_ppp_record=1
+
+            speaker_mode="$speaker_mode" \
+            profile_downstream="$profile_downstream" \
+            profile_upstream="$profile_upstream" \
+            option_proxyarp="$option_proxyarp" \
+            option_modem_control="$option_modem_control" \
+            option_debug="$option_debug" \
+            option_tcstatus="$option_tcstatus" \
+            tc_status_interval="$tc_status_interval" \
+            lcp_echo_interval="$lcp_echo_interval" \
+            lcp_echo_failure="$lcp_echo_failure" \
+            dns_primary="$dns_primary" \
+            dns_secondary="$dns_secondary" \
+            option_ppp_record="$option_ppp_record" \
+              "$dialscript"
+
+            if [[ $carrierdetect == 1 ]]; then exec 99<>/dev/$serport; fi
+
+            # Reset serial settings
+            ttyinit
+            result=3
+          else
+            # The default PPP service is missing.
+            result=3
+          fi
+
+        elif (( audio_status == 3 )); then
+          result=7
         else
-          dialscript="./ppp.sh"
-        fi
-
-        if [ -f "$dialscript" ]; then
-          if [[ $resultverbose == 1 ]]; then sendtty "CONNECT $baud\n"; else sendtty "1\n"; fi
-
-          # Assert DCD when carrier detection is turned on (for Trumpet Winsock)
-          if [[ $carrierdetect == 1 ]]; then exec 99>&-; fi
-
-          # Tell the terminal to use CR/LF for newlines instead of just CR.
-          echo -en "\x1b[20h" > /dev/$serport
-
-          # Run the selected service. vmodem waits here until it returns.
-          # Record PPP traffic only when modem audio is requested.
-          option_ppp_record=0
-          [[ "$speaker_mode" == 1 || "$speaker_mode" == 2 ]] && option_ppp_record=1
-
-          speaker_mode="$speaker_mode" \
-          profile_downstream="$profile_downstream" \
-          profile_upstream="$profile_upstream" \
-          option_proxyarp="$option_proxyarp" \
-          option_modem_control="$option_modem_control" \
-          option_debug="$option_debug" \
-          option_tcstatus="$option_tcstatus" \
-          tc_status_interval="$tc_status_interval" \
-          lcp_echo_interval="$lcp_echo_interval" \
-          lcp_echo_failure="$lcp_echo_failure" \
-          dns_primary="$dns_primary" \
-          dns_secondary="$dns_secondary" \
-          option_ppp_record="$option_ppp_record" \
-            "$dialscript"
-
-          if [[ $carrierdetect == 1 ]]; then exec 99<>/dev/$serport; fi
-
-          # Reset serial settings
-          ttyinit
-          result=3
-        else
-          # The default PPP service is missing.
           result=3
         fi
 

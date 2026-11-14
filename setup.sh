@@ -60,20 +60,24 @@ download_scripts() {
 check_scripts() {
     echo '[2/5] Checking project files'
     local missing=() script
+
+    echo removing existing files ...
+    find "${PROJECT_DIR}" -maxdepth 1 ! -name 'setup.sh' ! -name '.' -type f -delete
+ 
+    echo refetching current files ...
     for script in vmodem.sh ppp.sh sound.py ppp_noise.py ipam.json \
                   vmodem@.service vmodem-network.sh vmodem-network.service \
                   99-vmodem.rules vmodem-shaper.sh journald@vmodem.conf \
-                  vmodem-soundd.service v34_sound_v2.bin.gz; do
-        [[ -f "$PROJECT_DIR/$script" ]] || missing+=("$script")
+                  vmodem-soundd.service vmodem-soundd.py v34_sound_v2.bin.gz; do
+        [[ -f "$PROJECT_DIR/$script" ]] && download_scripts ${script}
     done
-    if ((${#missing[@]})); then
-        download_scripts "${missing[@]}"
-    fi
-    # Apply permissions to both existing and newly downloaded scripts.
+
+    echo updating permissions ...
     for script in "$PROJECT_DIR"/*.sh "$PROJECT_DIR"/*.py; do
         [[ -f "$script" ]] && chmod 755 -- "$script"
     done
-    echo 'Project scripts: OK (mode 755)'
+
+    echo 'Project scripts updated'
 }
 
 check_dependencies() {
@@ -177,7 +181,6 @@ install_vmodem_services() {
         systemctl disable vmodem.service || fail 'Could not disable legacy vmodem.service.'
     fi
     [ -f "${systemd_dir}/vmodem.service" ] && rm -f "${systemd_dir}/vmodem.service"
-    [ -f "${PROJECT_DIR}/vmodem.service" ] && rm -f "${PROJECT_DIR}/vmodem.service"
 
     # configure common logspace for vmodem
     install -m 0644 "$PROJECT_DIR/journald@vmodem.conf" "/etc/systemd/journald@vmodem.conf"
@@ -201,6 +204,7 @@ install_vmodem_services() {
     # install ppp if-up/if-down hooks for VModem traffic shaping
     ln -sfn $PROJECT_DIR/vmodem-shaper.sh /etc/ppp/ip-up.d/zz-vmodem-shaper
     ln -sfn $PROJECT_DIR/vmodem-shaper.sh /etc/ppp/ip-down.d/00-vmodem-shaper    
+    echo 'PPP traffic shaper installed'
 }
 
 (($# == 0)) || fail 'Usage: sudo bash setup.sh'
