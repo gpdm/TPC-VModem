@@ -231,9 +231,96 @@ sudo bash setup.sh
 
 The script installs the project into `/opt/vmodem`, downloads the required files, checks dependencies, configures `pigpiod`, and installs the systemd services and udev rules. Modem instances are started when a supported USB serial adapter is detected.
 
+
+## Configuration
+
+Most settings can be changed from the serial terminal. Just type `SETUP` at the modem prompt. There is normally no need to edit the hardcoded defaults in `vmodem.sh` or `ppp.sh`.
+
+```text
+System Setup
+============
+
+Current Modem Configuration
+Baud Rate : 57600
+Emulation : V.34bis (33600/33600 bps)
+
+1. Modem Configuration
+2. PPP Configuration
+3. Wi-Fi Settings
+4. Exit
+
+Enter your selection:
+```
+
+Configurations are stored in `/opt/vmodem/config/` and tied to the **physical USB port** (the udev `ID_PATH`), not the serial adapter itself. You can replace an adapter in the same port and keep its settings. Moving it to another port gives it that port's configuration instead. The `ttyUSB0` / `ttyUSB1` numbering is not used to identify the saved configuration.
+
+### Modem Configuration
+
+The default serial baud rate is **57600**, and the default modem profile is **V.34bis** (33600/33600 bps). The baud rate controls the serial link between the retro computer and the Raspberry Pi.
+
+Choose the serial baud rate first, then select a modem profile. Only profiles supported by the selected baud rate are shown.
+
+The modem profile determines the emulated connection speed as per the table below:
+
+| Profile | Modem Standard | Downstream (bps) | Upstream (bps) | Minimum DTE Baud Rate |
+|---------|----------------|-----------------:|---------------:|----------------------:|
+| V21 | V.21 | 300 | 300 | 9600 |
+| V22 | V.22 | 1200 | 1200 | 9600 |
+| V22BIS | V.22bis | 2400 | 2400 | 9600 |
+| V32 | V.32 | 9600 | 9600 | 19200 |
+| V32BIS | V.32bis | 14400 | 14400 | 19200 |
+| V34 | V.34 | 28800 | 28800 | 38400 |
+| V34BIS | V.34bis | 33600 | 33600 | 57600 |
+| V90 | V.90 | 56000 | 33600 | 115200 |
+| X2 | X2 | 56000 | 33600 | 115200 |
+| K56flex | K56flex | 56000 | 33600 | 115200 |
+| V92 | V.92 | 56000 | 48000 | 115200 |
+| ISDN64 | ISDN 64k | 64000 | 64000 | 115200 |
+| ISDN128 | ISDN 128k | 128000 | 128000 | 230400 |
+
+Please note that TPC-Vmodem does net yet emulate handshakes audio other than V.34.
+For now, you'll always hear a V.34 handshake for every profile.
+
+If either setting changes, the modem saves the configuration and restarts after **10 seconds**.
+If you changed the baud rate, remember to change it on your terminal and modem settings as well.
+
+### PPP Configuration
+
+The second menu contains the PPP options. These are the defaults:
+
+```text
+PPP Configuration
+=================
+
+1. Proxy ARP           : Disabled
+2. PPP Debug           : Disabled
+3. Traffic Statistics  : Enabled
+4. Statistics Interval : 60 seconds
+5. LCP Echo Interval   : 10 seconds
+6. LCP Echo Failures   : 3
+7. Primary DNS         : 9.9.9.9
+8. Secondary DNS       : 149.112.112.112
+9. Modem Control (DCD) : Enabled
+0. Save and return
+
+Enter your selection:
+```
+
+| Setting | What it does |
+|---------|--------------|
+| Proxy ARP | Enables `pppd` proxy ARP. Usually not needed with NAT. |
+| PPP Debug | Enables additional `pppd` debugging output. |
+| Traffic Statistics | Prints traffic shaping statistics to the journal. |
+| Statistics Interval | How often the statistics are printed, in seconds. |
+| LCP Echo Interval | Time between PPP LCP echo requests. `0` disables them. |
+| LCP Echo Failures | Number of unanswered LCP echoes before the connection is considered lost. |
+| Primary / Secondary DNS | DNS server addresses offered to the connected computer. |
+| Modem Control (DCD) | Uses modem control signals with `pppd`, or local mode when disabled. |
+
 ## Debugging
 
 All TPC-VModem services use a separate journald namespace called `vmodem`.
+It's by default limited to 100 MB, to not take up too much disk space on the RPi's SD card.
 
 ```bash
 # All TPC-VModem logs
