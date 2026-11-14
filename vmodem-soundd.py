@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 #
-# TPC-VModem - GPIO sound generator
+# TPC-VModem - shared GPIO sound server
 #
-# Dial tone, DTMF, ringback, and precomputed V.34 audio via GPIO18.
+# Emits Dial tone, DTMF, ringback, V.34 handshake and line noise via GPIO18.
 #
 # Developed for TPC-VModem:
 #   Gianpaolo Del Matto (THE PHINTAGE COLLECTOR), 2026
@@ -13,6 +13,7 @@
 # License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
 # https://creativecommons.org/licenses/by-nc-sa/4.0/
 #
+import argparse
 import gzip
 import json
 import queue
@@ -1148,15 +1149,42 @@ def main():
     return 0
 
 
-if __name__ == "__main__":
-    if len(sys.argv) == 2 and sys.argv[1] == '--prepare-noise-cache':
+def cli_main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="TPC-VModem shared GPIO sound server",
+        epilog="Examples:\n"
+               "  %(prog)s --daemon\n"
+               "  %(prog)s --prepare-noise-cache",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "-d", "--daemon", action="store_true",
+        help="run the audio daemon (foreground, suitable for systemd)",
+    )
+    mode.add_argument(
+        "--prepare-noise-cache", action="store_true",
+        help="generate the PPP noise cache for Raspberry Pi 1",
+    )
+    args = parser.parse_args(argv)
+
+    if not args.daemon and not args.prepare_noise_cache:
+        parser.print_help()
+        return 0
+
+    if args.prepare_noise_cache:
         prepare_cache()
-        sys.exit(0)
+        return 0
+
     signal.signal(signal.SIGHUP, signal_reload)
     signal.signal(signal.SIGINT, signal_stop)
     signal.signal(signal.SIGTERM, signal_stop)
     try:
-        sys.exit(main())
+        return main()
     except (RuntimeError, OSError) as exc:
         print(f"vmodem-soundd: {exc}", file=sys.stderr)
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(cli_main())
