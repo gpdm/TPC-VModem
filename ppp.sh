@@ -25,8 +25,7 @@
 # reader must keep draining the FIFO for the whole PPP session, even
 # after it has stopped generating sound.
 recordfifo="/run/tpc-vmodem-ppp-$$.fifo"
-noisereader="./ppp_noise.py"
-noisereader_pid=
+noise_session=0
 pppd_pid=
 monitor_pid=
 
@@ -65,10 +64,10 @@ exit_handler () {
     wait "$monitor_pid" 2>/dev/null
   fi
 
-  # Stop the record reader if it is still running.
-  if [[ -n "$noisereader_pid" ]] && kill -0 "$noisereader_pid" 2>/dev/null; then
-    kill "$noisereader_pid" 2>/dev/null
-    wait "$noisereader_pid" 2>/dev/null
+  # Stop the daemon's reader before removing the FIFO.
+  if [[ "$noise_session" == 1 ]]; then
+    emit_fx_linenoise STOP "$recordfifo" >/dev/null || true
+    noise_session=0
   fi
   rm -f "$recordfifo"
 
@@ -83,6 +82,7 @@ exit_handler () {
 
 # catch signals and ensure cleanup is performed
 trap exit_handler EXIT
+trap exit_handler HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -123,21 +123,30 @@ pppd_debug=
 # Use DCD carrier detection when modem control is enabled.
 [[ "${option_modem_control:-1}" == 1 ]] && pppd_modem_control=modem || pppd_modem_control=local
 
-# Only record the PPP stream when modem audio is enabled.
-pppd_record_options=()
-if [[ "${option_ppp_record:-0}" == 1 ]]; then
-  if [[ -f "$noisereader" ]]; then
-    if ! mkfifo "$recordfifo"; then
-      printf 'ERROR: Unable to create PPP record FIFO.\n' >&2
-      exit 1
-    fi
+# The PPP handler decides whether line noise is requested.
+# ATM semantics remain outside the audio daemon.
+noise_duration=
+if [[ "$modem_profile" != ISDN* ]]; then
+  case "${speaker_mode:-1}" in
+    1) noise_duration="${linenoise_time:-4}" ;;
+    2) noise_duration=CONTINUOUS ;;
+  esac
+fi
 
-    # The reader must start before pppd opens the FIFO.
-    python3 "$noisereader" "$recordfifo" &
-    noisereader_pid=$!
+pppd_record_options=()
+if [[ -n "$noise_duration" ]]; then
+  if ! mkfifo "$recordfifo"; then
+    printf 'ERROR: Unable to create PPP record FIFO.\n' >&2
+    exit 1
+  fi
+
+  # Start the reader before pppd opens its record FIFO.
+  if emit_fx_linenoise START "$recordfifo" "$noise_duration"; then
+    noise_session=1
     pppd_record_options=(record "$recordfifo")
   else
-    printf 'WARNING: PPP noise reader missing; recording disabled.\n' >&2
+    rm -f "$recordfifo"
+    printf 'WARNING: PPP audio reader unavailable; recording disabled.\n' >&2
   fi
 fi
 

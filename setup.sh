@@ -65,11 +65,11 @@ check_scripts() {
     find "${PROJECT_DIR}" -maxdepth 1 ! -name 'setup.sh' ! -name '.' -type f -delete
  
     echo refetching current files ...
-    for script in vmodem.sh ppp.sh ppp_noise.py ipam.json \
-                  vmodem@.service vmodem-network.sh vmodem-network.service \
-                  99-vmodem.rules vmodem-shaper.sh journald@vmodem.conf \
+    for script in vmodem.sh ppp.sh vmodem@.service ipam.json 99-vmodem.rules \
+                  vmodem-network.sh vmodem-network.service vmodem-shaper.sh \
+                  journald@vmodem.conf \
                   vmodem-soundd.service vmodem-soundd.py vmodem-soundctl.sh \
-	          v34_sound_v2.bin.gz; do
+                  v34_sound_v2.bin.gz; do
         download_scripts ${script}
     done
 

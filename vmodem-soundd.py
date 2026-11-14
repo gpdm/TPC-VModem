@@ -14,6 +14,10 @@
 # https://creativecommons.org/licenses/by-nc-sa/4.0/
 #
 import gzip
+import json
+import queue
+import subprocess
+import stat
 import struct
 import sys
 import time
@@ -78,11 +82,16 @@ DTMF = {
 
 
 running = True
+_reload_requested = threading.Event()
 _client_context = threading.local()
 
 
 class ClientDisconnected(Exception):
     pass
+
+
+def signal_reload(signum, frame):
+    _reload_requested.set()
 
 
 def signal_stop(signum, frame):
@@ -390,6 +399,8 @@ SOCKET_PATH = "/run/vmodem/sound.sock"
 MAX_COMMAND_BYTES = 256
 _owner_lock = threading.Lock()
 _owner = None
+_sessions_lock = threading.Lock()
+_sessions = {}
 
 
 def cleanup_gpio(pi):
@@ -404,6 +415,508 @@ def cleanup_gpio(pi):
 
 def reply(conn, message):
     conn.sendall((message + "\n").encode("ascii"))
+
+
+
+
+# PPP data audio. Synthesis and record format derive from ppp_noise.py.
+def needs_cache():
+    return model.startswith('Raspberry Pi Model ')
+
+NOISE_SECONDS = 6.0
+SAMPLE_RATE = 20000
+CHUNK_MS = 250                  # Cached blocks: 24 per connection
+LIVE_CHUNK_MS = 250             # Same timing for live synthesis
+CARRIER_HZ = 1920              # V.34-inspired answer-side carrier
+SYMBOL_RATE = 2400             # Plausible V.34 symbol rate
+SHAPING = 0.22                 # Simple I/Q pulse smoothing (not a true RRC)
+FADE_SECONDS = 0.10
+
+CACHE_VERSION = 2
+CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          'ppp_noise_cache_v2.json.gz')
+EVENT_QUEUE_SIZE = 32
+TWO_PI = 2.0 * math.pi
+FRAME_COUNT = int(round(NOISE_SECONDS * 1000 / CHUNK_MS))
+SAMPLES_PER_CHUNK = SAMPLE_RATE * CHUNK_MS // 1000
+SAMPLE_US = 1000000 // SAMPLE_RATE
+
+TAG_SENT = 1
+TAG_RECEIVED = 2
+TAG_SEND_EOF = 3
+TAG_RECV_EOF = 4
+TAG_TIME_LONG = 5
+TAG_TIME_SHORT = 6
+TAG_START = 7
+
+
+def cache_signature():
+    return [CACHE_VERSION, SAMPLE_RATE, CHUNK_MS, CARRIER_HZ,
+            SYMBOL_RATE, SHAPING, NOISE_SECONDS]
+
+
+class QamSynth:
+    """Continuous pseudo-scrambled, pulse-shaped passband data signal.
+
+    The symbol stream runs even when PPP is idle, as a real modem's data
+    carrier would. Actual PPP traffic perturbs future symbols, NOT the carrier
+    frequency or loudness. A one-bit sign output suits the GPIO speaker;
+    no NumPy or SciPy is required at runtime.
+    """
+
+    def __init__(self, seed=0x5A3217):
+        self.register = seed & 0x7fffff or 1
+        self.symbol_clock = SAMPLE_RATE  # Generate the first symbol immediately.
+        self.target_i = self.target_q = 0.0
+        self.shaped_i = self.shaped_q = 0.0
+        self.carrier_cos = 1.0
+        self.carrier_sin = 0.0
+        self.samples = 0
+
+    def render(self, count, influence=0, fade_out=False, fade_duration=NOISE_SECONDS):
+        # Only the pseudo-random symbol sequence reacts to the PPP bytes.
+        register = (self.register ^ (influence & 0x7fffff)) or 1
+        clock = self.symbol_clock
+        target_i, target_q = self.target_i, self.target_q
+        shaped_i, shaped_q = self.shaped_i, self.shaped_q
+        carrier_cos, carrier_sin = self.carrier_cos, self.carrier_sin
+        step_cos = math.cos(TWO_PI * CARRIER_HZ / SAMPLE_RATE)
+        step_sin = math.sin(TWO_PI * CARRIER_HZ / SAMPLE_RATE)
+        start_sample = self.samples
+        fade_start = int(max(0.0, fade_duration - FADE_SECONDS) * SAMPLE_RATE)
+        fade_end = int(fade_duration * SAMPLE_RATE)
+        first_level = last_level = None
+        durations = []
+        run_us = 0
+
+        for n in range(count):
+            if clock >= SAMPLE_RATE:
+                clock -= SAMPLE_RATE
+                # 23-bit pseudo-random shift register, inspired by a modem
+                # scrambler. It is deliberately NOT a full V.34 encoder.
+                bits = 0
+                for bit in range(4):
+                    feedback = ((register >> 22) ^ (register >> 17)) & 1
+                    register = ((register << 1) | feedback) & 0x7fffff
+                    bits |= feedback << bit
+                # 16-QAM-like constellation. No tones are changed by traffic.
+                target_i = (-3.0, -1.0, 3.0, 1.0)[bits & 3]
+                target_q = (-3.0, -1.0, 3.0, 1.0)[bits >> 2]
+            clock += SYMBOL_RATE
+            shaped_i += SHAPING * (target_i - shaped_i)
+            shaped_q += SHAPING * (target_q - shaped_q)
+            wave = shaped_i * carrier_cos - shaped_q * carrier_sin
+
+            # In one-bit output, an increasing threshold gives a short fade
+            # rather than incorrectly multiplying a waveform before sign().
+            threshold = 0.0
+            if fade_out and start_sample + n >= fade_start:
+                threshold = 5.0 * min(1.0,
+                    (start_sample + n - fade_start) / (fade_end - fade_start))
+            level = int(wave > threshold)
+
+            if last_level is None:
+                first_level = last_level = level
+                run_us = SAMPLE_US
+            elif level == last_level:
+                run_us += SAMPLE_US
+            else:
+                durations.append(run_us)
+                last_level = level
+                run_us = SAMPLE_US
+
+            # Recursive oscillator avoids costly sine calls per audio sample.
+            carrier_cos, carrier_sin = (
+                carrier_cos * step_cos - carrier_sin * step_sin,
+                carrier_sin * step_cos + carrier_cos * step_sin)
+
+        if run_us:
+            durations.append(run_us)
+        self.register = register
+        self.symbol_clock = clock
+        self.target_i, self.target_q = target_i, target_q
+        self.shaped_i, self.shaped_q = shaped_i, shaped_q
+        # Keep the oscillator numerically stable for continuous sessions.
+        norm = math.hypot(carrier_cos, carrier_sin)
+        self.carrier_cos, self.carrier_sin = carrier_cos / norm, carrier_sin / norm
+        self.samples += count
+        return [first_level, durations]
+
+
+def prepare_cache():
+    """Prepare two six-second Pi 1 tracks: idle and traffic-active."""
+    bank = {}
+    print(f'Preparing {FRAME_COUNT * 2} V.34-inspired sound blocks...', flush=True)
+    for mode, seed in (('idle', 0x5A3217), ('traffic', 0x3E19AB)):
+        synth = QamSynth(seed)
+        for frame in range(FRAME_COUNT):
+            # Each bank is a coherent six-second stream: no 250ms sound loop.
+            bank[f'{mode}_{frame}'] = synth.render(
+                SAMPLES_PER_CHUNK, fade_out=(frame == FRAME_COUNT - 1))
+            print(f'  [{len(bank):02d}/{FRAME_COUNT * 2}] {mode}_{frame}', flush=True)
+
+    print('Compressing and saving sound cache...', flush=True)
+    output = {'signature': cache_signature(), 'bank': bank}
+    temporary = CACHE_FILE + '.tmp'
+    try:
+        with gzip.open(temporary, 'wt', encoding='utf-8', compresslevel=6) as file:
+            json.dump(output, file, separators=(',', ':'))
+        os.replace(temporary, CACHE_FILE)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    print(f'Prepared {len(bank)} sound blocks: {CACHE_FILE}', flush=True)
+
+
+def load_cache(report_errors=True):
+    try:
+        with gzip.open(CACHE_FILE, 'rt', encoding='utf-8') as file:
+            payload = json.load(file)
+        if payload.get('signature') != cache_signature():
+            raise ValueError('cache settings changed')
+        bank = payload['bank']
+        if len(bank) != FRAME_COUNT * 2 or any(
+                f'{mode}_{frame}' not in bank
+                for mode in ('idle', 'traffic') for frame in range(FRAME_COUNT)):
+            raise ValueError('sound bank incomplete')
+        return bank
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        if report_errors:
+            print(f'vmodem-soundd: sound cache missing or invalid ({exc}).\n'
+                  'Run once: python3 vmodem-soundd.py --prepare-noise-cache\n'
+                  'PPP recording will still be drained safely.', file=sys.stderr)
+        return None
+
+
+def build_gpio_pulses(piece):
+    """Convert cached bit durations into pigpio pulses, no DSP needed."""
+    level, durations = piece
+    pulses = []
+    for duration_us in durations:
+        pulses.append(pigpio.pulse(GPIO_MASK if level else 0,
+                                   0 if level else GPIO_MASK,
+                                   duration_us))
+        level ^= 1
+    return pulses
+
+
+
+
+class NoisePlayer:
+    """FIFO events are consumed independently from exclusive GPIO playback."""
+
+    def __init__(self, session, requested_duration):
+        self.session = session
+        self.cached = needs_cache()
+        modem_count = active_modem_count()
+        self.continuous = (requested_duration == 'CONTINUOUS'
+                           and not self.cached and modem_count == 1)
+        if modem_count > 1:
+            # Multiple serial modems must never produce permanent GPIO noise.
+            self.duration = (2.0 if requested_duration == 'CONTINUOUS'
+                             else min(2.0, float(requested_duration)))
+        elif requested_duration == 'CONTINUOUS':
+            # Pi 1 only supports its precomputed six-second cache.
+            self.duration = NOISE_SECONDS
+        else:
+            self.duration = float(requested_duration)
+
+        if self.cached and self.duration > NOISE_SECONDS:
+            print('vmodem-soundd: limiting cached PPP audio to 6 seconds',
+                  file=sys.stderr)
+            self.duration = NOISE_SECONDS
+
+        self.events = queue.Queue(maxsize=EVENT_QUEUE_SIZE)
+        self.started = None
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.play, daemon=True)
+        self.thread.start()
+
+    def feed(self, direction, data):
+        if not data or self.stop.is_set():
+            return
+        if self.started is None:
+            self.started = time.monotonic()
+        if not self.continuous and time.monotonic() - self.started >= self.duration:
+            return
+        step = max(1, len(data) // 16)
+        sampled = data[::step][:16]
+        value = (sum(sampled) + (len(data) & 255)) & 255
+        try:
+            self.events.put_nowait((direction, value))
+        except queue.Full:
+            pass
+
+    def recent_traffic(self, tx, rx):
+        activity = False
+        while True:
+            try:
+                direction, value = self.events.get_nowait()
+            except queue.Empty:
+                break
+            activity = True
+            if direction == 'TX':
+                tx = value
+            else:
+                rx = value
+        return tx, rx, activity
+
+    def play(self):
+        global _owner
+        while not self.stop.is_set() and self.started is None and running:
+            self.stop.wait(0.01)
+        if self.stop.is_set() or not running:
+            return
+
+        # An active dial wins. PPP recording still drains if audio is busy.
+        with _owner_lock:
+            if _owner is not None:
+                print('vmodem-soundd: PPP audio skipped, GPIO busy', file=sys.stderr)
+                return
+            _owner = self.session
+
+        pi = None
+        try:
+            bank = load_cache() if self.cached else None
+            if self.cached and bank is None:
+                return
+            if self.stop.is_set():
+                return
+            pi = open_gpio()
+            pi.set_mode(GPIO_PIN, pigpio.OUTPUT)
+            pi.write(GPIO_PIN, 0)
+            pi.wave_clear()
+            previous_id = None
+            tx, rx = 61, 113
+            synth = QamSynth() if not self.cached else None
+            count = SAMPLE_RATE * (CHUNK_MS if self.cached else LIVE_CHUNK_MS) // 1000
+            frame_count = (int(SAMPLE_RATE * self.duration) + count - 1) // count
+            sample_number = 0
+            frame = 0
+            while running and not self.stop.is_set() and (self.continuous or frame < frame_count):
+                tx, rx, activity = self.recent_traffic(tx, rx)
+                if self.cached:
+                    piece = bank[f'{"traffic" if activity else "idle"}_{frame}']
+                else:
+                    chunk = count if self.continuous else min(
+                        count, int(SAMPLE_RATE * self.duration) - sample_number)
+                    fingerprint = ((tx << 9) ^ (rx << 1) ^ (tx * 257)) if activity else 0
+                    piece = synth.render(chunk, influence=fingerprint,
+                                         fade_out=not self.continuous,
+                                         fade_duration=self.duration)
+                    sample_number += chunk
+                pi.wave_add_new()
+                pi.wave_add_generic(build_gpio_pulses(piece))
+                wave_id = pi.wave_create_and_pad(50)
+                if wave_id < 0:
+                    raise RuntimeError(f'pigpio cannot allocate wave: {wave_id}')
+                if previous_id is None or not pi.wave_tx_busy():
+                    if previous_id is not None:
+                        print('vmodem-soundd: PPP audio underrun', file=sys.stderr)
+                    pi.wave_send_once(wave_id)
+                else:
+                    pi.wave_send_using_mode(wave_id, pigpio.WAVE_MODE_ONE_SHOT_SYNC)
+                    while running and not self.stop.is_set():
+                        wave_at = pi.wave_tx_at()
+                        if wave_at in (wave_id, pigpio.NO_TX_WAVE):
+                            break
+                        self.stop.wait(0.004)
+                    if self.stop.is_set() or not running:
+                        break
+                if previous_id is not None:
+                    pi.wave_delete(previous_id)
+                previous_id = wave_id
+                frame += 1
+            while running and not self.stop.is_set() and pi.wave_tx_busy():
+                self.stop.wait(0.01)
+        except Exception as exc:
+            print(f'vmodem-soundd: PPP audio disabled: {exc}', file=sys.stderr)
+        finally:
+            # Never make the lease available until GPIO cleanup completes.
+            cleaned = False
+            try:
+                if pi is not None:
+                    cleanup_gpio(pi)
+                cleaned = True
+            except Exception as exc:
+                print(f'vmodem-soundd: PPP GPIO cleanup failed: {exc}', file=sys.stderr)
+            if cleaned:
+                with _owner_lock:
+                    if _owner is self.session:
+                        _owner = None
+            # Preserve original behavior: the FIFO reader continues after sound ends.
+
+    def close(self):
+        self.stop.set()
+        if self.thread is not None:
+            self.thread.join(timeout=3)
+
+
+class InterruptibleFIFO:
+    """Read from an O_RDWR FIFO without EOF races before pppd connects."""
+
+    def __init__(self, path, stop):
+        self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
+        self.stop = stop
+
+    def read(self, size):
+        while running and not self.stop.is_set():
+            ready, _, _ = select.select([self.fd], [], [], 0.1)
+            if ready:
+                try:
+                    data = os.read(self.fd, size)
+                    if data:
+                        return data
+                except BlockingIOError:
+                    continue
+        return b''
+
+    def close(self):
+        os.close(self.fd)
+
+
+class PPPNoiseSession:
+    def __init__(self, path, duration):
+        self.path = path
+        self.duration = duration
+        self.stop = threading.Event()
+        self.player = None
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def run(self):
+        try:
+            with_fifo = InterruptibleFIFO(self.path, self.stop)
+            try:
+                # Reader is ready before any player startup or cache loading.
+                self.player = NoisePlayer(self, self.duration)
+                parse_ppp_record(with_fifo, self.player)
+            finally:
+                with_fifo.close()
+        except Exception as exc:
+            print(f'vmodem-soundd: PPP record reader failed: {exc}', file=sys.stderr)
+        finally:
+            if self.player is not None:
+                self.player.close()
+            with _sessions_lock:
+                if _sessions.get(self.path) is self:
+                    del _sessions[self.path]
+
+    def close(self):
+        self.stop.set()
+        if self.player is not None:
+            self.player.stop.set()
+        self.thread.join(timeout=3)
+
+
+def read_exact(stream, count):
+    data = bytearray()
+    while len(data) < count:
+        chunk = stream.read(count - len(data))
+        if not chunk:
+            return None
+        data.extend(chunk)
+    return bytes(data)
+
+
+def parse_ppp_record(stream, player):
+    while running and not player.session.stop.is_set():
+        tag_raw = stream.read(1)
+        if not tag_raw:
+            break
+        tag = tag_raw[0]
+        if tag in (TAG_SENT, TAG_RECEIVED):
+            size = read_exact(stream, 2)
+            if size is None:
+                break
+            data = read_exact(stream, int.from_bytes(size, 'big'))
+            if data is None:
+                break
+            player.feed('TX' if tag == TAG_SENT else 'RX', data)
+        elif tag == TAG_TIME_SHORT:
+            if read_exact(stream, 1) is None:
+                break
+        elif tag == TAG_TIME_LONG or tag == TAG_START:
+            if read_exact(stream, 4) is None:
+                break
+        elif tag in (TAG_SEND_EOF, TAG_RECV_EOF):
+            pass
+        else:
+            print(f'vmodem-soundd: unknown PPP record tag {tag}', file=sys.stderr)
+            # Don't stop consuming the FIFO if a record is not understood.
+            while stream.read(4096):
+                pass
+            break
+
+
+def active_modem_count():
+    try:
+        result = subprocess.run(
+            ['systemctl', 'list-units', '--type=service', '--state=active',
+             '--plain', '--no-legend', 'vmodem@*.service'],
+            capture_output=True, text=True, timeout=3, check=True)
+        return sum(1 for line in result.stdout.splitlines()
+                   if line.split() and line.split()[0].startswith('vmodem@')
+                   and line.split()[0].endswith('.service'))
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f'vmodem-soundd: cannot count active modems: {exc}', file=sys.stderr)
+        return 2  # Fail safe: no unlimited PPP audio.
+
+
+def process_reload():
+    count = active_modem_count()
+    print(f'vmodem-soundd: SIGHUP, active modems={count}', file=sys.stderr)
+    if count > 1:
+        with _sessions_lock:
+            sessions = list(_sessions.values())
+        for session in sessions:
+            player = session.player
+            if player is not None and player.continuous:
+                player.continuous = False
+                player.stop.set()  # Stops ONLY the audio worker, not the FIFO reader.
+
+
+def is_safe_fifo(path):
+    return (path.startswith('/run/tpc-vmodem-ppp-') and path.endswith('.fifo')
+            and len(path) <= 200 and os.path.isabs(path)
+            and stat.S_ISFIFO(os.stat(path).st_mode))
+
+
+def handle_ppp_control(conn, command):
+    fields = command.split()
+    if len(fields) == 3 and fields[0] == 'PPP_START':
+        path, duration = fields[1:]
+        if not is_safe_fifo(path):
+            reply(conn, 'ERROR INVALID_ARGUMENT')
+            return
+        if duration != 'CONTINUOUS':
+            try:
+                seconds = float(duration)
+            except ValueError:
+                reply(conn, 'ERROR INVALID_ARGUMENT')
+                return
+            if not math.isfinite(seconds) or not 0 < seconds <= 3600:
+                reply(conn, 'ERROR INVALID_ARGUMENT')
+                return
+        with _sessions_lock:
+            if path in _sessions:
+                reply(conn, 'ERROR ALREADY_RUNNING')
+                return
+            session = PPPNoiseSession(path, duration)
+            _sessions[path] = session
+        session.start()
+        reply(conn, 'OK')
+    elif len(fields) == 2 and fields[0] == 'PPP_STOP':
+        path = fields[1]
+        with _sessions_lock:
+            session = _sessions.get(path)
+        if session is not None:
+            session.close()
+        reply(conn, 'DONE')
+    else:
+        reply(conn, 'ERROR UNKNOWN_COMMAND')
 
 
 def perform(conn, pi, request):
@@ -514,6 +1027,16 @@ def handle_client(conn):
                     except UnicodeDecodeError:
                         reply(conn, "ERROR INVALID_ENCODING")
                         continue
+                    if command.startswith('PPP_'):
+                        if acquired:
+                            reply(conn, 'ERROR ALREADY_OWNED')
+                        else:
+                            try:
+                                handle_ppp_control(conn, command)
+                            except (OSError, ValueError) as exc:
+                                print(f'vmodem-soundd: PPP control error: {exc}', file=sys.stderr)
+                                reply(conn, 'ERROR AUDIO_FAILURE')
+                        return
                     if command == "ACQUIRE":
                         if acquired:
                             reply(conn, "ERROR ALREADY_OWNED")
@@ -603,6 +1126,9 @@ def main():
         threads = []
         try:
             while running:
+                if _reload_requested.is_set():
+                    _reload_requested.clear()
+                    process_reload()
                 try:
                     conn, _ = server.accept()
                 except socket.timeout:
@@ -612,6 +1138,10 @@ def main():
                 threads.append(worker)
                 threads = [t for t in threads if t.is_alive()]
         finally:
+            with _sessions_lock:
+                sessions = list(_sessions.values())
+            for session in sessions:
+                session.close()
             for worker in threads:
                 worker.join(timeout=2)
             path.unlink(missing_ok=True)
@@ -619,6 +1149,10 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == '--prepare-noise-cache':
+        prepare_cache()
+        sys.exit(0)
+    signal.signal(signal.SIGHUP, signal_reload)
     signal.signal(signal.SIGINT, signal_stop)
     signal.signal(signal.SIGTERM, signal_stop)
     try:

@@ -164,8 +164,6 @@ TERM="vt100"
 
 # Audio daemon socket. The daemon exclusively owns GPIO18.
 audio_socket="/run/vmodem/sound.sock"
-noisehelper="./ppp_noise.py"
-noisecache="ppp_noise_cache_v1.json.gz"
 
 # Hayes speaker mode.
 # ISDN is always silent (M0), analog modems default to M1.
@@ -175,16 +173,12 @@ speaker_mode=${speaker_mode_default}
 # Dialtone is only heard briefly after ATD, not while idle.
 dialtone_time=2
 
+# Seconds of PPP line noise when ATM1 is selected.
+linenoise_time=4
+
 # number of ringbacks and pauses
 ringback_cycles=2
 ringback_pause=3
-
-# Only Raspberry Pi 1 needs a cache. Other models synthesize live.
-# ppp_noise.py --check handles the model detection and cache validation.
-if [[ -f "$noisehelper" ]] && ! python3 "$noisehelper" --check; then
-    python3 "$noisehelper" --prepare || \
-        echo 'WARNING: PPP noise cache could not be prepared.' >&2
-fi
 
 
 # EXPORT SHELL VARS
@@ -193,6 +187,8 @@ export serport
 export baud
 export modem_profile
 export TERM
+export audio_socket
+export linenoise_time
 
 
 # -----------------------
@@ -465,10 +461,37 @@ soundd_command () {
   esac
 }
 
-# Function: emit_sound
+# Function: emit_fx_linenoise
+# Register or stop asynchronous PPP audio using the shared socket functions.
+# The daemon handles its own GPIO lease; PPP_START does not acquire a dialing lease.
+emit_fx_linenoise () {
+  local operation=$1 fifo=$2 duration=${3:-} command status=0
+
+  case "$operation" in
+    START)
+      [[ -n "$fifo" && -n "$duration" ]] || return 1
+      command="PPP_START $fifo $duration"
+      ;;
+    STOP)
+      [[ -n "$fifo" ]] || return 1
+      command="PPP_STOP $fifo"
+      ;;
+    *)
+      echo "ERROR: Invalid line noise operation: $operation" >&2
+      return 1
+      ;;
+  esac
+
+  soundd_connect || return 1
+  soundd_command "$command" || status=$?
+  soundd_disconnect
+  return "$status"
+}
+
+# Function: emit_fx_dialup
 # Acquire atomically, play the complete dial sequence, then release before PPP.
 # Return 3 for BUSY, 1 for an audio failure, 0 on success.
-emit_sound () {
+emit_fx_dialup () {
   local digits=$1 status=0
   local dial_mode=AUDIBLE
   local ring_mode=AUDIBLE
@@ -795,6 +818,11 @@ EOF
 export -f sendtty
 export -f readtty
 export -f ttyinit
+# Reuse the same socket client implementation in PPP child processes.
+export -f soundd_connect
+export -f soundd_command
+export -f soundd_disconnect
+export -f emit_fx_linenoise
 
 # resolve the current modem profile based on the configuration
 find_modem_profile "$modem_profile"
@@ -916,7 +944,7 @@ while [ "$continue" != "1" ]; do
       if [[ ! -z "$number" ]]; then
         # Acquire before any sound. BUSY must not start PPP.
         audio_status=0
-        emit_sound "$number" || audio_status=$?
+        emit_fx_dialup "$number" || audio_status=$?
         if (( audio_status == 0 )); then
           # A number-specific script wins. Everything else is handled
           # by the default PPP service.
@@ -936,10 +964,6 @@ while [ "$continue" != "1" ]; do
             echo -en "\x1b[20h" > /dev/$serport
 
             # Run the selected service. vmodem waits here until it returns.
-            # Record PPP traffic only when modem audio is requested.
-            option_ppp_record=0
-            [[ "$speaker_mode" == 1 || "$speaker_mode" == 2 ]] && option_ppp_record=1
-
             speaker_mode="$speaker_mode" \
             profile_downstream="$profile_downstream" \
             profile_upstream="$profile_upstream" \
@@ -952,7 +976,6 @@ while [ "$continue" != "1" ]; do
             lcp_echo_failure="$lcp_echo_failure" \
             dns_primary="$dns_primary" \
             dns_secondary="$dns_secondary" \
-            option_ppp_record="$option_ppp_record" \
               "$dialscript"
 
             if [[ $carrierdetect == 1 ]]; then exec 99<>/dev/$serport; fi

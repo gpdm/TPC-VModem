@@ -6,6 +6,7 @@
 
 [Unit]
 Description=TPC-VModem shared audio daemon
+StopWhenUnneeded=yes
 
 [Service]
 Type=simple
@@ -16,6 +17,3 @@ Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10
 LogNamespace=vmodem
-
-[Install]
-WantedBy=multi-user.target
