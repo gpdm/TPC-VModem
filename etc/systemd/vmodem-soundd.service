@@ -10,9 +10,9 @@ StopWhenUnneeded=yes
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/vmodem
+WorkingDirectory=/opt/vmodem/libexec
 RuntimeDirectory=vmodem
-ExecStart=/usr/bin/python3 /opt/vmodem/vmodem-soundd.py --daemon
+ExecStart=/usr/bin/python3 /opt/vmodem/libexec/vmodem-soundd.py --daemon
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10

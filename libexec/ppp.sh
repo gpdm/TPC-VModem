@@ -30,7 +30,7 @@ pppd_pid=
 monitor_pid=
 
 # CNI host-local assigns one remote IP per PPP session.
-ipam_config="/opt/vmodem/ipam.json"
+ipam_config="/opt/vmodem/etc/ipam.json"
 ipam_binary="/usr/lib/cni/host-local"
 ipam_reserved=0
 

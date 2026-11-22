@@ -87,7 +87,7 @@ ISDN profiles do not generate analog modem audio, regardless of the ATM setting 
 For testing there is also `vmodem-soundctl.sh`, a small shell client for the audio socket. It can play individual effects and test the exclusive audio lease, without establishing a modem connection:
 
 ```bash
-cd /opt/vmodem
+cd /opt/vmodem/bin
 ./vmodem-soundctl.sh dialtone 2
 ./vmodem-soundctl.sh dtmf 12345
 ./vmodem-soundctl.sh v34
@@ -97,8 +97,8 @@ cd /opt/vmodem
 The sound daemon has two explicit modes:
 
 ```bash
-python3 /opt/vmodem/vmodem-soundd.py --daemon
-python3 /opt/vmodem/vmodem-soundd.py --prepare-noise-cache
+python3 /opt/vmodem/libexec/vmodem-soundd.py --daemon
+python3 /opt/vmodem/libexec/vmodem-soundd.py --prepare-noise-cache
 ```
 
 The first runs the server in the foreground (normally started by systemd).
@@ -229,7 +229,9 @@ wget https://raw.githubusercontent.com/gpdm/TPC-VModem/refs/heads/v2/setup.sh
 sudo bash setup.sh
 ```
 
-The script installs the project into `/opt/vmodem`, downloads the required files, checks dependencies, configures `pigpiod`, and installs the systemd services and udev rules. Modem instances are started when a supported USB serial adapter is detected.
+The script clones the project into `/opt/vmodem`, checks dependencies, configures `pigpiod`, and symlinks the systemd services and udev rules from `/opt/vmodem/etc/` into the system directories. Modem instances are started when a supported USB serial adapter is detected.
+
+Updating an existing installation works the same way: re-running `setup.sh` performs a `git pull` in `/opt/vmodem` and refreshes the system integration. Since the systemd units and udev rules are symlinks into `/opt/vmodem/etc/`, a plain `git pull` already updates them in place; run `systemctl daemon-reload` (and `udevadm control --reload-rules`) afterwards for changed units to take effect.
 
 
 ## Configuration
@@ -260,7 +262,7 @@ Emulation : V.34bis (33600/33600 bps)
 Enter your selection:
 ```
 
-Configurations are stored in `/opt/vmodem/config/` and tied to the **physical USB port** (the udev `ID_PATH`), not the serial adapter itself. You can replace an adapter in the same port and keep its settings. Moving it to another port gives it that port's configuration instead. The `ttyUSB0` / `ttyUSB1` numbering is not used to identify the saved configuration.
+Configurations are stored in `/opt/vmodem/portconfig/` and tied to the **physical USB port** (the udev `ID_PATH`), not the serial adapter itself. You can replace an adapter in the same port and keep its settings. Moving it to another port gives it that port's configuration instead. The `ttyUSB0` / `ttyUSB1` numbering is not used to identify the saved configuration.
 
 ### Modem Configuration
 

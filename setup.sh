@@ -15,66 +15,61 @@
 #
 set -euo pipefail
 
-PROJECT_DIR=/opt/vmodem
-SOURCE_SCRIPT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-GITHUB_RAW=https://raw.githubusercontent.com/gpdm/TPC-VModem/refs/heads/v2/
+APP_DIR=/opt/vmodem
+GIT_REPO=https://github.com/gpdm/TPC-VModem.git
+GIT_BRANCH=v2
 PIGPIOD_OVERRIDE_FILE=/etc/systemd/system/pigpiod.service.d/zz-tpc-vmodem.conf
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-move_setup() {
-    echo '[1/5] Preparing installation directory'
-    mkdir -p "$PROJECT_DIR"
-    mkdir -p "$PROJECT_DIR/config"
+fetch_project() {
+    echo '[1/5] Fetching project files'
 
-    if [[ "$SOURCE_SCRIPT" != "$PROJECT_DIR/setup.sh" ]]; then
-        mv -f -- "$SOURCE_SCRIPT" "$PROJECT_DIR/setup.sh" || fail 'Could not move setup.sh.'
-        echo "Moved setup.sh to $PROJECT_DIR"
-    fi
-
-    cd -- "$PROJECT_DIR"
-    echo "Installation directory: $PROJECT_DIR"
-}
-
-download_scripts() {
-    local script tmp
-
-    # Only needed for a fresh or incomplete installation.
-    if ! command -v curl >/dev/null 2>&1; then
-        command -v apt-get >/dev/null 2>&1 || fail 'apt-get is required to install curl.'
+    # git is required before the regular dependency check runs.
+    if ! command -v git >/dev/null 2>&1; then
+        command -v apt-get >/dev/null 2>&1 || fail 'apt-get is required to install git.'
         apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y curl || fail 'Could not install curl.'
+        DEBIAN_FRONTEND=noninteractive apt-get install -y git || fail 'Could not install git.'
     fi
 
-    for script in "$@"; do
-        echo "Downloading $script"
-        tmp="$(mktemp "$PROJECT_DIR/.${script}.XXXXXX")"
-        if ! curl -fLsS --retry 2 "$GITHUB_RAW/$script" -o "$tmp" || [[ ! -s "$tmp" ]]; then
-            rm -f -- "$tmp"
-            fail "Could not download $script from $GITHUB_RAW"
+    if [[ -d "$APP_DIR/.git" ]]; then
+        echo "Updating existing installation in $APP_DIR"
+        git -C "$APP_DIR" fetch origin || fail 'Could not fetch updates.'
+        git -C "$APP_DIR" checkout "$GIT_BRANCH" || fail "Could not switch to branch $GIT_BRANCH."
+        git -C "$APP_DIR" pull --ff-only origin "$GIT_BRANCH" || fail 'Could not update the working tree.'
+        echo "Installation directory: $APP_DIR"
+        return
+    fi
+
+    # Fresh installation, or migration of a legacy flat installation.
+    local clone_tmp
+    clone_tmp="$(mktemp -d /opt/.vmodem-clone.XXXXXX)" || fail 'Could not create a temporary directory.'
+    if ! git clone --branch "$GIT_BRANCH" "$GIT_REPO" "$clone_tmp/vmodem"; then
+        rm -rf "$clone_tmp"
+        fail "Could not clone $GIT_REPO"
+    fi
+
+    if [[ -d "$APP_DIR" ]]; then
+        echo 'Migrating legacy flat installation'
+        # Keep existing per-port configurations.
+        if [[ -d "$APP_DIR/config" ]]; then
+            mv -- "$APP_DIR/config" "$clone_tmp/vmodem/portconfig"
         fi
-        mv -- "$tmp" "$PROJECT_DIR/$script"
-    done
+        rm -rf "$APP_DIR"
+    fi
+    mv -- "$clone_tmp/vmodem" "$APP_DIR"
+    rm -rf "$clone_tmp"
+    echo "Installation directory: $APP_DIR"
 }
 
-check_scripts() {
+check_project() {
     echo '[2/5] Checking project files'
-    local missing=() script
+    local script
 
-    echo removing existing files ...
-    find "${PROJECT_DIR}" -maxdepth 1 ! -name 'setup.sh' ! -name '.' -type f -delete
- 
-    echo refetching current files ...
-    for script in vmodem.sh ppp.sh vmodem@.service ipam.json 99-vmodem.rules \
-                  vmodem-network.sh vmodem-network.service vmodem-shaper.sh \
-                  journald@vmodem.conf \
-                  vmodem-soundd.service vmodem-soundd.py vmodem-soundctl.sh \
-                  v34_sound_v2.bin.gz; do
-        download_scripts ${script}
-    done
+    mkdir -p "$APP_DIR/portconfig"
 
     echo updating permissions ...
-    for script in "$PROJECT_DIR"/*.sh "$PROJECT_DIR"/*.py; do
+    for script in "$APP_DIR"/bin/* "$APP_DIR"/libexec/*; do
         [[ -f "$script" ]] && chmod 755 -- "$script"
     done
 
@@ -91,7 +86,7 @@ check_dependencies() {
 
     # Check everything once, then install all missing packages together.
     # format is: program:package
-    for entry in python3:python3 pigpiod:pigpio pppd:ppp \
+    for entry in python3:python3 pigpiod:pigpio pppd:ppp git:git \
                  iptables:iptables xxd:xxd stty:coreutils sysctl:procps \
                  /usr/lib/cni/host-local:containernetworking-plugins \
                  tc:iproute2 jq:jq wpa_cli:wpasupplicant; do
@@ -184,16 +179,16 @@ install_vmodem_services() {
     [ -f "${systemd_dir}/vmodem.service" ] && rm -f "${systemd_dir}/vmodem.service"
 
     # configure common logspace for vmodem
-    install -m 0644 "$PROJECT_DIR/journald@vmodem.conf" "/etc/systemd/journald@vmodem.conf"
+    ln -sfn "$APP_DIR/etc/systemd/journald@vmodem.conf" "/etc/systemd/journald@vmodem.conf"
     if systemctl is-active --quiet systemd-journald@vmodem.service; then
         systemctl restart systemd-journald@vmodem.service
     fi
 
     # install systemd and udev rules for dynamic VModem
-    install -m 0644 "$PROJECT_DIR/vmodem@.service" "${systemd_dir}/vmodem@.service"
-    install -m 0644 "$PROJECT_DIR/vmodem-network.service" "${systemd_dir}/vmodem-network.service"
-    install -m 0644 "$PROJECT_DIR/vmodem-soundd.service" "${systemd_dir}/vmodem-soundd.service"
-    install -m 0644 "$PROJECT_DIR/99-vmodem.rules" "${udev_rules_dir}/99-vmodem.rules"
+    ln -sfn "$APP_DIR/etc/systemd/vmodem@.service" "${systemd_dir}/vmodem@.service"
+    ln -sfn "$APP_DIR/etc/systemd/vmodem-network.service" "${systemd_dir}/vmodem-network.service"
+    ln -sfn "$APP_DIR/etc/systemd/vmodem-soundd.service" "${systemd_dir}/vmodem-soundd.service"
+    ln -sfn "$APP_DIR/etc/udev/99-vmodem.rules" "${udev_rules_dir}/99-vmodem.rules"
     systemctl daemon-reload
     udevadm control --reload-rules || fail 'Could not reload udev rules.'
     udevadm trigger --action=add --subsystem-match=tty --sysname-match='ttyUSB*' ||
@@ -203,16 +198,19 @@ install_vmodem_services() {
     echo 'Dynamic VModem service template and udev rules installed'
 
     # install ppp if-up/if-down hooks for VModem traffic shaping
-    ln -sfn $PROJECT_DIR/vmodem-shaper.sh /etc/ppp/ip-up.d/zz-vmodem-shaper
-    ln -sfn $PROJECT_DIR/vmodem-shaper.sh /etc/ppp/ip-down.d/00-vmodem-shaper    
+    ln -sfn "$APP_DIR/libexec/vmodem-shaper.sh" /etc/ppp/ip-up.d/zz-vmodem-shaper
+    ln -sfn "$APP_DIR/libexec/vmodem-shaper.sh" /etc/ppp/ip-down.d/00-vmodem-shaper
     echo 'PPP traffic shaper installed'
 }
 
 (($# == 0)) || fail 'Usage: sudo bash setup.sh'
 ((EUID == 0)) || fail 'Run as root: sudo bash setup.sh'
-move_setup
 
-check_scripts
+# The working directory may be removed during a legacy migration.
+cd /
+
+fetch_project
+check_project
 check_dependencies
 configure_pigpiod
 install_vmodem_services

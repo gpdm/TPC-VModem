@@ -29,3 +29,10 @@
   to not cause overlaps within LANs. One should not use this one normally
   on local sites, but since TPC-Vmodem is essentially also emulating an
   ISP PPP headend, it's safe. Plus it's in preparation for an upcoming feature.
+* restructured the repository and /opt/vmodem into a UNIX-like layout
+  (bin/, libexec/, etc/, share/, tools/); per-port configurations moved
+  from /opt/vmodem/config to /opt/vmodem/portconfig
+* replaced setup.sh's per-file download facility by git clone/pull,
+  and replaced copied system files (systemd units, udev rules, journald
+  config) by symlinks into /opt/vmodem/etc, so a git pull updates
+  everything in place

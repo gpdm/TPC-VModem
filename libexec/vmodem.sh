@@ -52,7 +52,7 @@
 vmodver=2.0
 
 # Directory where configuration files are stored.
-config_dir=/opt/vmodem/config
+config_dir=/opt/vmodem/portconfig
 
 # Specifies the configuration file to use.
 # initialized at runtime based on the serial port.

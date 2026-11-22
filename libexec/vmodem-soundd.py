@@ -58,7 +58,7 @@ else:
     DTMF_GAP = 0.03
 
 WAVE_SAMPLE_RATE = 20000
-V34_CACHE = Path(__file__).resolve().with_name("v34_sound_v2.bin.gz")
+V34_CACHE = Path(__file__).resolve().parents[1] / "share" / "v34_sound_v2.bin.gz"
 V34_MAGIC = b"TPCV34\x02\x00"
 V34_CHUNK_MS = 500
 

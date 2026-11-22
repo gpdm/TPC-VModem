@@ -11,7 +11,7 @@ StopWhenUnneeded=yes
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/opt/vmodem
-ExecStart=/bin/bash /opt/vmodem/vmodem-network.sh start
-ExecStop=/bin/bash /opt/vmodem/vmodem-network.sh stop
+WorkingDirectory=/opt/vmodem/libexec
+ExecStart=/bin/bash /opt/vmodem/libexec/vmodem-network.sh start
+ExecStop=/bin/bash /opt/vmodem/libexec/vmodem-network.sh stop
 LogNamespace=vmodem
