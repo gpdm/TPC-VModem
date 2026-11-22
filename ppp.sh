@@ -154,7 +154,7 @@ pppd noauth nodetach "$pppd_modem_control" lock \
   $pppd_proxyarp $pppd_debug \
   lcp-echo-interval "$lcp_echo_interval" lcp-echo-failure "$lcp_echo_failure" \
   ms-dns "$dns_primary" ms-dns "$dns_secondary" \
-  "10.0.100.1:$remote_ip" \
+  "100.64.254.1:$remote_ip" \
   ipparam "$profile_downstream:$profile_upstream" \
   "${pppd_record_options[@]}" \
   "/dev/$serport" "$baud" &

@@ -25,3 +25,7 @@
 * implemented silent mode support in vmodem-soundd to support silent dial-in
 * adapted vmodem.sh to use vmodem-soundd instead of sound.py
 * removed sound.py
+* replaced 10.0.100.0/24 RFC1918 by 100.64.254.0/24 RFC6598
+  to not cause overlaps within LANs. One should not use this one normally
+  on local sites, but since TPC-Vmodem is essentially also emulating an
+  ISP PPP headend, it's safe. Plus it's in preparation for an upcoming feature.
