@@ -85,6 +85,7 @@ load_config () {
     echo "WARNING: No config file found; will be using defaults." >&2
     return
   else
+    echo "Loading config file from ${config_file}"
     source "${config_file}"
   fi
 }
