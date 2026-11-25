@@ -242,8 +242,10 @@ Use `ATI` to display system uptime, network interfaces and the current modem set
 `HELP` lists the supported commands.
 Type `SETUP` at the modem prompt to enter config mode.
 
-There is normally no need to edit the hardcoded defaults in `vmodem.sh` or `ppp.sh`.
-All relevant options are available through the `SETUP` menu.
+Global defaults are read from `/opt/vmodem/etc/defaults.conf`; per-port
+settings in `/opt/vmodem/portconfig/` override them. The `SETUP` menu saves
+per-port modem and PPP settings. Script-side fallbacks remain in place if a
+setting is absent from both configuration files.
 
 
 ```text

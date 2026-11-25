@@ -36,3 +36,6 @@
   and replaced copied system files (systemd units, udev rules, journald
   config) by symlinks into /opt/vmodem/etc, so a git pull updates
   everything in place
+* introduced centralized defaults.conf for config definitions in vmodem.sh
+  and ppp.sh: the two scripts now only include fallback declarations
+  for sanity reasons. 

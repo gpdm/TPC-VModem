@@ -53,6 +53,7 @@ vmodver=2.0
 
 # Directory where configuration files are stored.
 config_dir=/opt/vmodem/portconfig
+global_config_file=/opt/vmodem/etc/defaults.conf
 
 # Specifies the configuration file to use.
 # initialized at runtime based on the serial port.
@@ -76,8 +77,13 @@ serport=${1:-ttyUSB0}
 # -----------------------
 
 # Function: load_config
-# Loads the configuration file for the specified serial port, if it exists.
+# Loads global defaults, then the configuration file for the specified serial port.
 load_config () {
+  if [[ -f "$global_config_file" ]]; then
+    echo "Loading global defaults from ${global_config_file}"
+    source "$global_config_file"
+  fi
+
   config_file=$(udevadm info --query=property --name="/dev/$serport" |
               awk -F'=' -v dir="$config_dir" '/^ID_PATH=/ {print dir "/" $2 ".conf"}')
 
@@ -95,7 +101,7 @@ load_config () {
 # CONFIGURATION
 # -----------------------
 
-# load the configuration file (if it exists)
+# Load global defaults first, then per-port overrides if present.
 load_config
 
 
@@ -119,39 +125,13 @@ modem_profiles=(
   'ISDN128|ISDN 128k|128000|128000|230400'
 )
 
-# Variable: echoser
-# echoser sets the default behaviour of echoing serial
-# data back to the client terminal. The default is 1.
-#
-echoser=1
-
-# Variable: resultverbose
-# Controls default behavior when printing Hayes result
-# codes. 
-# When 0, prints result codes in numerical form. (eg. 0)
-# When 1, prints result codes in english. (eg. CONNECT)
-# Default is 1.
-resultverbose=1
-
-# Variable: TERM
-# Tells the script and environment which type of terminal to emulate.
-# It is only useful to change this, if you're using a serial 
-# terminal to connect to this script. If you're connecting form a ANSI 
-# cabable machine such as DOS, you may want to use TERM="ansi"
-#
-TERM="vt100"
-
-# Variable: baud
-# baud specifies the default serial communication speed.
-# If not set, it defaults to 57600.
+# Fallback defaults if a value is missing from defaults.conf and the per-port config.
+# Change normal defaults in /opt/vmodem/etc/defaults.conf, not here.
+: "${echoser:=1}"
+: "${resultverbose:=1}"
+: "${TERM:=vt100}"
 : "${baud:=57600}"
-
-# Variable: modem_profile
-# Specifies the default modem profile to use.
-# If not set, it defaults to V34BIS.
 : "${modem_profile:=V34BIS}"
-
-# Per-modem PPP configuration
 : "${option_proxyarp:=0}"
 : "${option_modem_control:=1}"
 : "${option_debug:=0}"
@@ -161,25 +141,16 @@ TERM="vt100"
 : "${lcp_echo_failure:=3}"
 : "${dns_primary:=9.9.9.9}"
 : "${dns_secondary:=149.112.112.112}"
+: "${dialtone_time:=2}"
+: "${linenoise_time:=4}"
+: "${ringback_cycles:=2}"
+: "${ringback_pause:=3}"
+: "${audio_socket:=/run/vmodem/sound.sock}"
 
+# ISDN profiles always use ATM0; analog profiles default to ATM1.
+[[ "$modem_profile" == ISDN* ]] && speaker_mode_default=0 || : "${speaker_mode_default:=1}"
+speaker_mode=${speaker_mode_default}
 
-# Audio daemon socket. The daemon exclusively owns GPIO18.
-audio_socket="/run/vmodem/sound.sock"
-
-# Hayes speaker mode.
-# ISDN is always silent (M0), analog modems default to M1.
-[[ "$modem_profile" == ISDN* ]] && speaker_mode_default=0 || speaker_mode_default=1
-speaker_mode=${speaker_mode_default}  
-
-# Dialtone is only heard briefly after ATD, not while idle.
-dialtone_time=2
-
-# Seconds of PPP line noise when ATM1 is selected.
-linenoise_time=4
-
-# number of ringbacks and pauses
-ringback_cycles=2
-ringback_pause=3
 
 
 # EXPORT SHELL VARS
