@@ -236,35 +236,46 @@ Updating an existing installation works the same way: re-running `setup.sh` perf
 
 ## Configuration
 
-Most settings can be changed from the serial terminal. 
+Most settings can be changed from the serial terminal or the Linux console.
 
 Use `ATI` to display system uptime, network interfaces and the current modem settings.
 `HELP` lists the supported commands.
 Type `SETUP` at the modem prompt to enter config mode.
 
-Global defaults are read from `/opt/vmodem/etc/defaults.conf`; per-port
-settings in `/opt/vmodem/portconfig/` override them. The `SETUP` menu saves
-per-port modem and PPP settings. Script-side fallbacks remain in place if a
-setting is absent from both configuration files.
+For the same menus from the Linux console, run:
 
+```bash
+sudo bash /opt/vmodem/bin/vmodem-config.sh
+```
+
+The console asks which connected adapter to configure when opening a per-port
+submenu; serial `SETUP` uses its own port.
+
+Settings load from `/opt/vmodem/etc/defaults.conf`, then optional
+`etc/defaults.conf.local`, then `etc/portconfig/`. Script-side fallbacks cover missing
+settings. Menu saves write only overrides: global changes to `defaults.conf.local`,
+per-port changes to `etc/portconfig/`. Returning a setting to its inherited value
+removes the override. Use one configuration session at a time.
 
 ```text
 System Setup
 ============
 
-Current Modem Configuration
-Baud Rate : 57600
-Emulation : V.34bis (33600/33600 bps)
-
-1. Modem Configuration
-2. PPP Configuration
-3. Wi-Fi Settings
-4. Exit
+1. Global Wi-Fi settings
+2. Global modem defaults
+3. Global LCP, PPP & IP defaults
+4. Per-port modem settings
+5. Per-port LCP & PPP defaults
+0. Exit
 
 Enter your selection:
 ```
 
-Configurations are stored in `/opt/vmodem/portconfig/` and tied to the **physical USB port** (the udev `ID_PATH`), not the serial adapter itself. You can replace an adapter in the same port and keep its settings. Moving it to another port gives it that port's configuration instead. The `ttyUSB0` / `ttyUSB1` numbering is not used to identify the saved configuration.
+Configurations are stored in `/opt/vmodem/etc/portconfig/` and tied to the **physical USB port** (the udev `ID_PATH`), not the serial adapter itself. You can replace an adapter in the same port and keep its settings. Moving it to another port gives it that port's configuration instead. The `ttyUSB0` / `ttyUSB1` numbering is not used to identify the saved configuration.
+
+Global changes apply after modem instances restart. On exit after saving, the
+console offers to restart all running instances, which drops active connections.
+You can instead restart later, or unplug and reconnect a specific USB adapter.
 
 ### Modem Configuration
 
@@ -293,16 +304,18 @@ The modem profile determines the emulated connection speed as per the table belo
 Please note that TPC-Vmodem does net yet emulate handshakes audio other than V.34.
 For now, you'll always hear a V.34 handshake for every profile.
 
-If either setting changes, the modem saves the configuration and restarts after **10 seconds**.
+If either per-port setting changes through serial `SETUP`, the modem saves the configuration and restarts after **10 seconds**.
 If you changed the baud rate, remember to change it on your terminal and modem settings as well.
 
 ### PPP Configuration
 
-The second menu contains the PPP options. These are the defaults:
+Global and per-port menus contain the PPP options below; DNS is global only.
+Per-port PPP changes made through serial `SETUP` apply on the next dial.
+These are the defaults:
 
 ```text
-PPP Configuration
-=================
+Global LCP, PPP & IP defaults
+============================
 
 1. Proxy ARP           : Disabled
 2. PPP Debug           : Disabled
@@ -310,9 +323,9 @@ PPP Configuration
 4. Statistics Interval : 60 seconds
 5. LCP Echo Interval   : 10 seconds
 6. LCP Echo Failures   : 3
-7. Primary DNS         : 9.9.9.9
-8. Secondary DNS       : 149.112.112.112
-9. Modem Control (DCD) : Enabled
+7. Modem Control (DCD) : Enabled
+8. Primary DNS         : 9.9.9.9
+9. Secondary DNS       : 149.112.112.112
 0. Save and return
 
 Enter your selection:

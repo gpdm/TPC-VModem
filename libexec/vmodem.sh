@@ -17,141 +17,16 @@
 # https://creativecommons.org/licenses/by-nc-sa/4.0/
 #
 
-# Tested working out of box with the following client configurations:
-#
-# o Standard VT100 terminal
-# o HyperTerminal
-# o PuTTY
-#
-# PPP dial-up connectivity tested to initialize under the following configurations:
-#
-# o Windows 3.1
-#   - Trumpet Winsock 3.0 revision D
-#
-# o Windows 95 OSR 2.5 + DUN 1.4
-#   - Generic Modem
-#     - Standard 28800 bps Modem
-#
-# o Windows 98
-#   - Generic Modem
-#     - Standard 9 600 bps modem
-#     - Standard 33 600 bps modem
-#     - Standard 56 000 bps V90 modem
-#     - Standard 56 000 bps X2 modem
-#     - Standard 56 000 bps K56Flex modem
-#
-# o Windows 2000
-#   - Generic Modem
-#     - Standard 19200 bps Modem
-#
-# Help us test and add more supported systems! 
-# Contact us on Discord, links at the bottom of the Virtual Modem page.
-#
-
 # Script version
 vmodver=2.0
 
-# Directory where configuration files are stored.
-config_dir=/opt/vmodem/portconfig
-global_config_file=/opt/vmodem/etc/defaults.conf
-
-# Specifies the configuration file to use.
-# initialized at runtime based on the serial port.
-# Do not modify this manually!
-#
-config_file=
-
-# Variable: serport
-# serport specifies which local serial device to use.
-# For example, "ttyUSB0" will tell the script to use
-# to use /dev/ttyUSB0 for communication.
-#
-# NOTE: This variable is passed as an argument from systemd
-# and must not be modified within the script.
-#
+# Shared configuration and SETUP menus.
+config_appdir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) || exit 1
+source "$config_appdir/lib/vmodem/common.inc" || exit 1
 serport=${1:-ttyUSB0}
-
-
-# -----------------------
-# Pre-init Functions
-# -----------------------
-
-# Function: load_config
-# Loads global defaults, then the configuration file for the specified serial port.
-load_config () {
-  if [[ -f "$global_config_file" ]]; then
-    echo "Loading global defaults from ${global_config_file}"
-    source "$global_config_file"
-  fi
-
-  config_file=$(udevadm info --query=property --name="/dev/$serport" |
-              awk -F'=' -v dir="$config_dir" '/^ID_PATH=/ {print dir "/" $2 ".conf"}')
-
-  if [[ ! -f "${config_file}" ]]; then
-    echo "WARNING: No config file found; will be using defaults." >&2
-    return
-  else
-    echo "Loading config file from ${config_file}"
-    source "${config_file}"
-  fi
-}
-
-
-# -----------------------
-# CONFIGURATION
-# -----------------------
-
-# Load global defaults first, then per-port overrides if present.
-load_config
-
-
-# Array: modem_profiles
-# Contains the supported modem profiles.
-# Each entry is in the format:
-# ID|display name|downstream bps|upstream bps|minimum DTE baud
-modem_profiles=(
-  'V21|V.21|300|300|9600'
-  'V22|V.22|1200|1200|9600'
-  'V22BIS|V.22bis|2400|2400|9600'
-  'V32|V.32|9600|9600|19200'
-  'V32BIS|V.32bis|14400|14400|19200'
-  'V34|V.34|28800|28800|38400'
-  'V34BIS|V.34bis|33600|33600|57600'
-  'V90|V.90|56000|33600|115200'
-  'X2|X2|56000|33600|115200'
-  'K56flex|K56flex|56000|33600|115200'
-  'V92|V.92|56000|48000|115200'
-  'ISDN64|ISDN 64k|64000|64000|115200'
-  'ISDN128|ISDN 128k|128000|128000|230400'
-)
-
-# Fallback defaults if a value is missing from defaults.conf and the per-port config.
-# Change normal defaults in /opt/vmodem/etc/defaults.conf, not here.
-: "${echoser:=1}"
-: "${resultverbose:=1}"
-: "${TERM:=vt100}"
-: "${baud:=57600}"
-: "${modem_profile:=V34BIS}"
-: "${option_proxyarp:=0}"
-: "${option_modem_control:=1}"
-: "${option_debug:=0}"
-: "${option_tcstatus:=1}"
-: "${tc_status_interval:=60}"
-: "${lcp_echo_interval:=10}"
-: "${lcp_echo_failure:=3}"
-: "${dns_primary:=9.9.9.9}"
-: "${dns_secondary:=149.112.112.112}"
-: "${dialtone_time:=2}"
-: "${linenoise_time:=4}"
-: "${ringback_cycles:=2}"
-: "${ringback_pause:=3}"
-: "${audio_socket:=/run/vmodem/sound.sock}"
-
-# ISDN profiles always use ATM0; analog profiles default to ATM1.
-[[ "$modem_profile" == ISDN* ]] && speaker_mode_default=0 || : "${speaker_mode_default:=1}"
-speaker_mode=${speaker_mode_default}
-
-
+config_select_port "/dev/$serport" || exit 1
+config_validate config_port || exit 1
+config_apply_runtime
 
 # EXPORT SHELL VARS
 # -----------------
@@ -188,25 +63,43 @@ sendtty () {
 # Function: readtty
 # Reads input from TTY and stores it in variable given as first parameter.
 readtty () {
-  # Reads input from TTY and stores it in variable given as first parameter
-  line=
-  while [[ -z "$line" ]]; do
-    charhex=`head -c 1 /dev/$serport | xxd -p -`
-    char="`echo -e "\x$charhex"`"
-    echo -n "$char"
-    echo -n "$char" > /dev/$serport
-    # Newline received
-    if [ "$charhex" = "0d" -o "$charhex" = "0a" ]; then
-      line=$buffer
-      buffer=
-      char=
-      sendtty "\n"
+  local tty_char tty_buffer=
+  while IFS= read -r -n 1 tty_char; do
+    case "$tty_char" in
+      ''|$'\r')
+        printf -v "$1" '%s' "$tty_buffer"
+        sendtty "\n"
+        return 0
+        ;;
+      $'\177'|$'\b') tty_buffer=${tty_buffer%?} ;;
+      *) tty_buffer+=$tty_char; printf '%s' "$tty_char" > "/dev/$serport" ;;
+    esac
+  done < "/dev/$serport"
+  return 1
+}
+
+setup_saved() {
+  local scope=$1 key
+  shift
+  if [[ "$scope" == global ]]; then
+    sendtty "Global changes apply when modem instances next restart.\n"
+    return 0
+  fi
+  for key in "$@"; do
+    if [[ "$key" == baud || "$key" == modem_profile ]]; then
+      sendtty "The modem will restart shortly. Update your terminal speed if necessary.\n"
+      sleep 5
+      return 75
     fi
-    buffer=$buffer$char
   done
-  local __resultvar=$1
-  local result="$line"
-  printf -v "$__resultvar" '%s' "$result"
+  # PPP options can be used by the next dial without resetting AT state.
+  for key in "$@"; do
+    case "$key" in
+      baud|modem_profile) ;;
+      *) printf -v "$key" '%s' "${config_port[$key]}" ;;
+    esac
+  done
+  sendtty "Per-port PPP settings apply on the next dial.\n"
 }
 
 # Function: dohayes
@@ -279,7 +172,7 @@ dohayes () {
 
     # ISDN doesn't support audio output.
     # discard ATM settings and revert to the default speaker mode (ATM0).
-    [[ "$modem_profile" == ISDN* ]] && speaker_mode=$speaker_mode_default
+    [[ "$modem_profile" == ISDN* ]] && speaker_mode=$speaker_mode_reset_default
   fi
 
   # ATQn Result codes
@@ -322,7 +215,7 @@ dohayes () {
 
   # ATZ Reset modem
   # - Zn  Restore stored profile n
-  if [[ $hcmd == 'Z' ]]; then echoser=1; resultverbose=1; carrierdetect=0; speaker_mode=${speaker_mode_default}; result=0; fi
+  if [[ $hcmd == 'Z' ]]; then echoser=$echoser_reset_default; resultverbose=$resultverbose_reset_default; carrierdetect=0; speaker_mode=${speaker_mode_reset_default}; result=0; fi
 
   # AT&Cn Carrier-detect
   # - &C0 Force DCD signal active
@@ -348,7 +241,7 @@ dohayes () {
 
   # AT&F Restore factory settings
   # - &Fn Use profile n
-  if [[ $hcmd == '&F' ]]; then echoser=1; resultverbose=1; carrierdetect=0; speaker_mode=${speaker_mode_default}; result=0; fi
+  if [[ $hcmd == '&F' ]]; then echoser=$echoser_reset_default; resultverbose=$resultverbose_reset_default; carrierdetect=0; speaker_mode=${speaker_mode_reset_default}; result=0; fi
 
   # AT&K DTE - MODEM Flow control
   # - &K0 Local flow control off
@@ -562,7 +455,7 @@ systeminfo () {
 # Returns 0 if found, 1 otherwise.
 find_modem_profile () {
   local entry id
-  for entry in "${modem_profiles[@]}"; do
+  for entry in "${config_modem_profiles[@]}"; do
     IFS='|' read -r id name down up min_baud <<< "$entry"
 
     if [[ "$id" == "$modem_profile" ]]; then
@@ -575,212 +468,6 @@ find_modem_profile () {
   done
   return 1
 }
-
-
-# Function: modem_configuration
-# Interactively configures the modem baud rate and emulation profile.
-# Prompts the user to select a baud rate and modem profile from available options.
-# Saves the configuration if it has changed.
-modem_configuration () {
-  local selection new_baud new_modem entry id name down up min_baud i
-  local baud_rates=() available_profiles=()
-
-  # Build baud rate list from modem profiles.
-  mapfile -t baud_rates < <(
-    printf '%s\n' "${modem_profiles[@]}" |
-      cut -d'|' -f5 | sort -nu
-  )
-
-  # Baud rate selection.
-  sendtty "\nModem Configuration\n===================\n\n"
-  sendtty "Select Serial Baud Rate\n\n"
-
-  for i in "${!baud_rates[@]}"; do
-    sendtty "$((i + 1)). ${baud_rates[i]}\n"
-  done
-
-  sendtty "0. Cancel\n\nEnter your selection: "
-  readtty selection
-
-  [[ "$selection" == 0 ]] && return
-
-  if [[ ! "$selection" =~ ^[1-9][0-9]*$ ]] ||
-     (( selection > ${#baud_rates[@]} )); then
-    sendtty "Invalid selection.\n"
-    return
-  fi
-
-  new_baud=${baud_rates[selection-1]}
-
-  # Modem profile selection.
-  sendtty "\nSelect Modem Emulation\n\n"
-
-  for entry in "${modem_profiles[@]}"; do
-    IFS='|' read -r id name down up min_baud <<< "$entry"
-
-    if (( new_baud >= min_baud )); then
-      available_profiles+=("$id")
-      sendtty "${#available_profiles[@]}. $name ($down/$up bps)\n"
-    fi
-  done
-
-  sendtty "0. Cancel\n\nEnter your selection: "
-  readtty selection
-
-  [[ "$selection" == 0 ]] && return
-
-  if [[ ! "$selection" =~ ^[1-9][0-9]*$ ]] ||
-     (( selection > ${#available_profiles[@]} )); then
-    sendtty "Invalid selection.\n"
-    return
-  fi
-
-  new_modem=${available_profiles[selection-1]}
-
-  # Save only if the configuration changed.
-  if [[ "$new_baud" == "$baud" && "$new_modem" == "$modem_profile" ]]; then
-    sendtty "Configuration unchanged.\n"
-    return
-  fi
-
-  if ! save_config "$new_baud" "$new_modem" "$option_proxyarp" "$option_debug" "$option_tcstatus" \
-      "$tc_status_interval" "$lcp_echo_interval" "$lcp_echo_failure" "$dns_primary" "$dns_secondary" "$option_modem_control"; then
-    sendtty "Cannot save configuration.\n"
-    return
-  fi
-
-  sendtty "\nConfiguration saved successfully.\n\n"
-  sendtty "The virtual modem session will restart shortly\n"
-  sendtty "to apply the new settings.\n\n"
-  sendtty "If the serial baud rate has changed, please\n"
-  sendtty "configure your terminal to use the new speed.\n\n"
-
-  # extra wait time for user to read the message before restarting
-  # note: systemd adds another 5 seconds (RestartSec=5)
-  sleep 5
-
-  exit 75
-}
-
-
-# Function: valid_ipv4
-# Accepts a dotted IPv4 address with four decimal octets (0 through 255).
-valid_ipv4 () {
-  local address=$1 octet
-  local -a parts
-  [[ "$address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
-  IFS=. read -r -a parts <<< "$address"
-  for octet in "${parts[@]}"; do
-    (( ${#octet} <= 3 && 10#$octet <= 255 )) || return 1
-  done
-}
-
-# Function: ppp_configuration
-# Configures and persists optional PPP settings.
-ppp_configuration () {
-  local selection input
-  local new_proxyarp=$option_proxyarp new_debug=$option_debug new_tcstatus=$option_tcstatus
-  local new_modem_control=$option_modem_control
-  local new_tc_interval=$tc_status_interval new_lcp_interval=$lcp_echo_interval
-  local new_lcp_failure=$lcp_echo_failure new_dns_primary=$dns_primary new_dns_secondary=$dns_secondary
-
-  while true; do
-    sendtty "\nPPP Configuration\n=================\n\n"
-    sendtty "1. Proxy ARP           : $([[ "$new_proxyarp" == 1 ]] && echo Enabled || echo Disabled)\n"
-    sendtty "2. PPP Debug           : $([[ "$new_debug" == 1 ]] && echo Enabled || echo Disabled)\n"
-    sendtty "3. Traffic Statistics  : $([[ "$new_tcstatus" == 1 ]] && echo Enabled || echo Disabled)\n"
-    sendtty "4. Statistics Interval : $new_tc_interval seconds\n"
-    sendtty "5. LCP Echo Interval   : $new_lcp_interval seconds\n"
-    sendtty "6. LCP Echo Failures   : $new_lcp_failure\n"
-    sendtty "7. Primary DNS         : $new_dns_primary\n"
-    sendtty "8. Secondary DNS       : $new_dns_secondary\n"
-    sendtty "9. Modem Control (DCD) : $([[ "$new_modem_control" == 1 ]] && echo Enabled || echo Disabled)\n"
-    sendtty "0. Save and return\n\nEnter your selection: "
-    readtty selection
-
-    case "$selection" in
-      1) (( new_proxyarp = 1 - new_proxyarp )) ;;
-      2) (( new_debug = 1 - new_debug )) ;;
-      3) (( new_tcstatus = 1 - new_tcstatus )) ;;
-      9) (( new_modem_control = 1 - new_modem_control )) ;;
-      4|5|6)
-        sendtty "Enter new value: "
-        readtty input
-        if [[ "$input" =~ ^[0-9]+$ ]] && (( ${#input} <= 4 )) &&
-           (( (selection == 4 && 10#$input >= 1 && 10#$input <= 3600) ||
-              (selection == 5 && 10#$input <= 3600) ||
-              (selection == 6 && 10#$input <= 100) )); then
-          case "$selection" in
-            4) new_tc_interval=$((10#$input)) ;;
-            5) new_lcp_interval=$((10#$input)) ;;
-            6) new_lcp_failure=$((10#$input)) ;;
-          esac
-        else
-          sendtty "Invalid value. Statistics: 1..3600, LCP interval: 0..3600, failures: 0..100.\n"
-        fi
-        ;;
-      7|8)
-        sendtty "Enter IPv4 address: "
-        readtty input
-        if valid_ipv4 "$input"; then
-          if [[ "$selection" == 7 ]]; then
-            new_dns_primary=$input
-          else
-            new_dns_secondary=$input
-          fi
-        else
-          sendtty "Invalid IPv4 address.\n"
-        fi
-        ;;
-      0) break ;;
-      *) sendtty "Invalid selection.\n" ;;
-    esac
-  done
-
-  if [[ "$new_proxyarp" == "$option_proxyarp" &&
-        "$new_debug" == "$option_debug" &&
-        "$new_tcstatus" == "$option_tcstatus" &&
-        "$new_tc_interval" == "$tc_status_interval" &&
-        "$new_lcp_interval" == "$lcp_echo_interval" &&
-        "$new_lcp_failure" == "$lcp_echo_failure" &&
-        "$new_dns_primary" == "$dns_primary" &&
-        "$new_dns_secondary" == "$dns_secondary" &&
-        "$new_modem_control" == "$option_modem_control" ]]; then
-    sendtty "Configuration unchanged.\n"
-    return
-  fi
-
-  if ! save_config "$baud" "$modem_profile" "$new_proxyarp" "$new_debug" "$new_tcstatus" \
-       "$new_tc_interval" "$new_lcp_interval" "$new_lcp_failure" "$new_dns_primary" "$new_dns_secondary" "$new_modem_control"; then
-    sendtty "Cannot save configuration.\n"
-    return
-  fi
-}
-
-
-# Function: save_config
-# Saves modem and PPP settings to the configuration file.
-#
-# FIXME: could be a bit more sophisticated here,
-# for example, use a temporary file and atomic move to avoid partial writes.
-save_config () {
-  mkdir -p "$config_dir" || return 1
-
-  cat > "$config_file" <<EOF
-baud=$1
-modem_profile=$2
-option_proxyarp=$3
-option_debug=$4
-option_tcstatus=$5
-tc_status_interval=$6
-lcp_echo_interval=$7
-lcp_echo_failure=$8
-dns_primary=$9
-dns_secondary=${10}
-option_modem_control=${11}
-EOF
-}
-
 
 
 # -----------------------
@@ -1011,87 +698,11 @@ while [ "$continue" != "1" ]; do
     fi
 
     if [[ $cmd = "SETUP" ]]; then
-      while true; do
-        # Display menu
-        sendtty "\n"
-        sendtty "System Setup\n"
-        sendtty "============\n"
-        sendtty "\nCurrent Modem Configuration\n"
-        sendtty "Baud Rate : $baud\n"
-        sendtty "Emulation : $profile_name ($profile_downstream/$profile_upstream bps)\n\n"
-        sendtty "1. Modem Configuration\n"
-        sendtty "2. PPP Configuration\n"
-        sendtty "3. Wi-Fi Settings\n"
-        sendtty "4. Exit\n\n"
-        sendtty "Enter your selection: "
-        # Read user input
-        readtty selection
-
-        if [[ "$selection" == "1" ]]; then
-          modem_configuration
-        elif [[ "$selection" == "2" ]]; then
-          ppp_configuration
-        # Wireless network settings
-        elif [[ "$selection" == "3" ]]; then
-          while true; do
-            sendtty "\n"
-            sendtty "Wi-Fi Settings\n"
-            sendtty "==============\n"
-            sendtty "1. Connect to new Wi-Fi network\n"
-            sendtty "2. Modify password for current Wi-Fi network\n"
-            sendtty "3. Disconnect from current Wi-Fi network\n"
-            sendtty "4. Display current Wi-Fi connection status\n"
-            sendtty "5. Exit\n"
-            sendtty "Enter your selection: "
-            # Read user input
-            readtty selection
-            # Connect to new Wi-Fi network
-            if [[ "$selection" == "1" ]]; then
-              sendtty "Enter SSID: "
-              readtty ssid
-              sendtty "Enter password: "
-              readtty password
-              sudo wpa_cli -i wlan0 remove_network 0
-              sudo wpa_cli -i wlan0 add_network
-              sudo wpa_cli -i wlan0 set_network 0 ssid "\"$ssid\""
-              sudo wpa_cli -i wlan0 set_network 0 psk "\"$password\""
-              sudo wpa_cli -i wlan0 select_network 0
-              sudo wpa_cli -i wlan0 enable_network 0
-            # Modify password for current Wi-Fi network
-            elif [[ "$selection" == "2" ]]; then
-              sendtty "Enter new password: "
-              readtty password
-              sudo wpa_cli -i wlan0 set_network 0 psk "\"$password\""
-            # Disconnect from current Wi-Fi network
-            elif [[ "$selection" == "3" ]]; then
-              sendtty "Disconnecting from current Wi-Fi network\n"
-              sudo wpa_cli -i wlan0 disable_network 0
-            # Display current Wi-Fi connection status
-            elif [[ "$selection" == "4" ]]; then
-              status=$(sudo wpa_cli -i wlan0 status)
-              sendtty "\n"
-              sendtty "Wi-fi connection status\n"
-              sendtty "=======================\n"
-              sendtty "$status"
-              sendtty "\n"
-            # Exit
-            elif [[ "$selection" == "5" ]]; then
-              break
-            # Invalid selection
-            else
-              sendtty "Invalid selection. Please try again.\n"
-            fi
-          done
-        # Exit
-        elif [[ "$selection" == "4" ]]; then
-          sendtty "Exited setup\n"
-          sendtty "READY.\n"
-          break
-        # Invalid selection
-        else
-          sendtty "Invalid selection. Please try again.\n"
-        fi
-      done
+      setup_status=0
+      vmodem_setup serial || setup_status=$?
+      if (( setup_status == 75 )); then exit 75; fi
+      if (( setup_status != 0 )); then sendtty "Setup ended with an error.\n"; fi
+      sendtty "READY.\n"
     fi
 
 

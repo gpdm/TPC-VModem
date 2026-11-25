@@ -31,7 +31,7 @@
   ISP PPP headend, it's safe. Plus it's in preparation for an upcoming feature.
 * restructured the repository and /opt/vmodem into a UNIX-like layout
   (bin/, libexec/, etc/, share/, tools/); per-port configurations moved
-  from /opt/vmodem/config to /opt/vmodem/portconfig
+  from /opt/vmodem/config to /opt/vmodem/etc/portconfig
 * replaced setup.sh's per-file download facility by git clone/pull,
   and replaced copied system files (systemd units, udev rules, journald
   config) by symlinks into /opt/vmodem/etc, so a git pull updates
@@ -39,3 +39,6 @@
 * introduced centralized defaults.conf for config definitions in vmodem.sh
   and ppp.sh: the two scripts now only include fallback declarations
   for sanity reasons. 
+* extracted shared configuration and SETUP menus into lib/vmodem/common.inc
+* added console configurator bin/vmodem-config.sh with optional instance restart
+* added layered global/per-port overrides and consistent ATZ/AT&F reset defaults

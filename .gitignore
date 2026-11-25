@@ -1,5 +1,4 @@
 # ignore the MacOS .DS_Store junk 
 .DS_Store
 
-# runtime per-port configurations
-portconfig/
+etc/defaults.conf.local

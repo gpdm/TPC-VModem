@@ -53,7 +53,7 @@ fetch_project() {
         echo 'Migrating legacy flat installation'
         # Keep existing per-port configurations.
         if [[ -d "$APP_DIR/config" ]]; then
-            mv -- "$APP_DIR/config" "$clone_tmp/vmodem/portconfig"
+            cp -a -- "$APP_DIR/config/." "$clone_tmp/vmodem/etc/portconfig/"
         fi
         rm -rf "$APP_DIR"
     fi
@@ -65,8 +65,6 @@ fetch_project() {
 check_project() {
     echo '[2/5] Checking project files'
     local script
-
-    mkdir -p "$APP_DIR/portconfig"
 
     echo updating permissions ...
     for script in "$APP_DIR"/bin/* "$APP_DIR"/libexec/*; do
