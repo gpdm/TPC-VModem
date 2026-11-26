@@ -16,7 +16,18 @@ Right, *a Raspberry Pi emulating many modems*!
 And what is even more fun than that?
 When it brings along an entire virtual ISP!
 
-## Architecture
+## Changes From Original VModem
+
+* Added dial tone, DTMF, ringback and a V.34 handshake.
+* Added a central audio daemon, including PPP line noise based on the recorded data stream.
+* Added dynamic USB serial adapter handling and multiple modem instances via udev and systemd.
+* Added per port modem configuration, CNI address allocation and PPP traffic shaping.
+* Added `setup.sh` to install the dependencies and system services.
+* Kept the original number based script routing, however enforces `ppp.sh` as the default in absence of a more specific script.
+* Include a virtual ISP infrastructure, e.g. to add a transparent HTTP proxy, or a BBS server.
+
+
+## Overall Architecture
 
 TPC-VModem 2.0 supports multiple USB serial adapters.
 Each adapter gets its own modem instance, while networking and audio are shared between them.
@@ -54,7 +65,7 @@ Each adapter gets its own modem instance, while networking and audio are shared 
                    |
                 Speaker
 
-  vmodem-network.service:   IP forwarding / NAT
+  vmodem-network.service:   IP forwarding / NAT / Firewall
   CNI host-local:           PPP address allocation
   vmodem-shaper.sh:         PPP traffic shaping
 ```
@@ -67,21 +78,54 @@ Each adapter gets its own modem instance, while networking and audio are shared 
 then starts `pppd`. The PPP hooks in `vmodem-shaper.sh` apply the selected modem
 profile's upstream and downstream rates to each PPP interface.
 
-* `vmodem-network.service` manages shared IP forwarding, NAT and the Virtual ISP network
-infrastructure, including the `visp0` dummy interface plus associated firewall rules via `nftables`.
+* `vmodem-network.service` manages shared IP forwarding, NAT and the Virtual ISP network infrastructure.
 
-`etc/nftables/subscriber.nft` permits subscriber Internet forwarding and established
-return traffic, masquerading only `100.64.254.0/24` outside PPP and VISP interfaces.
-`etc/nftables/visp.nft` allows subscriber access to the virtual ISP Services.
+### Network
 
-The infrastructure addresses and services on `visp0` are:
+#### Subscriber Network (PPP Clients)
 
-| Address | Purpose |
+The PPP subscriber network allocates `100.64.254.0/24` from the RFC 6598 shared address space.
+A very leightweight IPAM built on CNI manages dynamic PPP address allocations in the `100.64.254.2` to `100.64.254.254` range.
+`100.64.254.1` is reserver as gateway address.
+
+Using the RFC 6598 address space instead of a common RFC 1918 reduces the
+chance of address overlap with the local LAN, and is generally applicable to an ISP operation, even if we're talking only about an "emulated" ISP here.
+
+```text
+  Retro computers             Raspberry Pi                LAN / Internet
+                             (virtual ISP)
+  +---------------+       +------------------+
+  | PPP client    |--PPP--|                  |
+  | 100.64.254.2  |       | Gateway          |
+  +---------------+       | 100.64.254.1     |     +------------------+
+                          |                  |--NAT-->| LAN / Internet |
+  +---------------+       |                  |     +------------------+
+  | PPP client    |--PPP--|                  |
+  | 100.64.254.3  |       +------------------+
+  +---------------+
+```
+
+
+#### Virtual ISP Network
+
+Likewise, the RFC 6598 shared space `100.64.255.0/24` address range is reserved for virtual ISP infrastructure.
+NetworkManager manages the service addresses on the `visp0` dummy interface, as of now:
+
+| Address | Service |
 |---------|---------|
-| 100.64.255.53/32 | DNS |
-| 100.64.255.80/32 | HTTP proxy |
+| 100.64.255.53/32 | Synthetic DNS (UDP/53) |
+| 100.64.255.80/32 | HTTP proxy (TCP/80) |
 
-These are defined in `etc/NetworkManager/system-connections/visp-infrastructure.nmconnection`.
+Firewall rules permit subscribers to access these services and block external access.
+
+3proxy's DNS returns the proxy address for IPv4 hostname queries; its HTTP proxy forwards
+requests to `wayback.protoweb.org:7851`. These settings can be changed in
+`etc/3proxy/3proxy.cfg`. Clients must be configured to use these services; traffic
+is not redirected automatically.
+
+3proxy packages support arm64, ARMv7-or-newer armhf, and amd64. On unsupported
+platforms, including the original ARMv6 Raspberry Pi, setup skips 3proxy and
+continues the rest of the installation.
 
 
 ### Sound
@@ -125,15 +169,6 @@ python3 /opt/vmodem/libexec/vmodem-soundd.py --prepare-noise-cache
 
 The first runs the server in the foreground (normally started by systemd).
 The second prepares the PPP noise cache for Raspberry Pi 1.
-
-## Changes From Original VModem
-
-* Added dial tone, DTMF, ringback and a V.34 handshake.
-* Added a central audio daemon, including PPP line noise based on the recorded data stream.
-* Added dynamic USB serial adapter handling and multiple modem instances via udev and systemd.
-* Added per port modem configuration, CNI address allocation and PPP traffic shaping.
-* Added `setup.sh` to install the dependencies and system services.
-* Kept the original number based script routing, with `ppp.sh` as the default.
 
 ## Required Hardware
 

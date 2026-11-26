@@ -76,12 +76,38 @@ check_project() {
 
 check_dependencies() {
     echo '[3/5] Checking system dependencies'
-    local needed=() entry program package
+    local needed=() entry program package architecture machine proxy_supported=0
 
     # Required to run the setup itself, not packages to install.
     command -v apt-get   >/dev/null 2>&1 || fail 'apt-get is required.'
     command -v systemctl >/dev/null 2>&1 || fail 'systemd is required.'
     command -v nmcli     >/dev/null 2>&1 || fail 'NetworkManager with nmcli is required.'
+
+    architecture=$(dpkg --print-architecture)
+    machine=$(uname -m)
+    case "$architecture:$machine" in
+        arm64:aarch64|amd64:x86_64|armhf:armv7l|armhf:armv8l|armhf:aarch64)
+            proxy_supported=1 ;;
+        *)
+            printf 'WARNING: 3proxy packages are unsupported on %s (%s); skipping 3proxy installation.\n' \
+                "$architecture" "$machine" >&2 ;;
+    esac
+
+    if ((proxy_supported)); then
+        # Package maintainer scripts start 3proxy: install our restrictions first.
+        chown root:root "$APP_DIR/etc/3proxy/3proxy.cfg"
+        chmod 644 "$APP_DIR/etc/3proxy/3proxy.cfg"
+        chmod a+rx "$APP_DIR" "$APP_DIR/etc" "$APP_DIR/etc/3proxy"
+        mkdir -p /etc/systemd/system/3proxy.service.d
+        ln -sfn "$APP_DIR/etc/systemd/3proxy.service.d/visp.conf" \
+            /etc/systemd/system/3proxy.service.d/visp.conf
+
+        ln -sfn "$APP_DIR/etc/apt/sources.list.d/3proxy.sources" \
+            /etc/apt/sources.list.d/3proxy.sources
+
+        # Include upgrades to the current repository version.
+        needed+=(3proxy)
+    fi
 
     # Check everything once, then install all missing packages together.
     # format is: program:package
@@ -100,12 +126,16 @@ check_dependencies() {
     fi
 
     if ((${#needed[@]})); then
-        printf 'Installing missing packages: %s\n' "${needed[*]}"
-        apt-get update
+        printf 'Installing dependencies: %s\n' "${needed[*]}"
+        apt-get update --error-on=any
         DEBIAN_FRONTEND=noninteractive apt-get install -y "${needed[@]}" || \
             fail 'Package installation failed.'
     else
         echo 'System dependencies: OK'
+    fi
+
+    if ((proxy_supported)); then
+        systemctl daemon-reload
     fi
 
     # Functional check after installation: catch Python environment mismatches.

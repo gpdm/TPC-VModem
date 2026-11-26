@@ -47,3 +47,5 @@
 * README updates
 * replaced iptables and the network shell script with declarative nftables tables
   for subscriber NAT/forwarding and VISP services
+* added 3proxy from its signed APT repository for synthetic DNS and HTTP forwarding,
+  using the packaged service with VISP configuration and shared network lifecycle

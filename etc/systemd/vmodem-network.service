@@ -7,6 +7,7 @@
 [Unit]
 Description=TPC-VModem shared network configuration
 Requires=NetworkManager.service
+Wants=3proxy.service
 After=NetworkManager.service
 StopWhenUnneeded=yes
 
