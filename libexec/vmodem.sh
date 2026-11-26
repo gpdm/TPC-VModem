@@ -441,6 +441,7 @@ systeminfo () {
 
   sendtty "\nCurrent PPP Settings:\n"
   sendtty "* Proxy ARP: $([[ "$option_proxyarp" == 1 ]] && echo Enabled || echo Disabled)\n"
+  sendtty "* Transparent DNS/HTTP Proxy: $([[ "$option_dnsproxy" == 1 ]] && echo Enabled || echo Disabled)\n"
   sendtty "* Modem control (DCD): $([[ "$option_modem_control" == 1 ]] && echo Enabled || echo Disabled)\n"
   sendtty "* PPP debug: $([[ "$option_debug" == 1 ]] && echo Enabled || echo Disabled)\n"
   sendtty "* Traffic statistics: $([[ "$option_tcstatus" == 1 ]] && echo Enabled || echo Disabled) ($tc_status_interval seconds)\n"
@@ -628,6 +629,7 @@ while [ "$continue" != "1" ]; do
             profile_downstream="$profile_downstream" \
             profile_upstream="$profile_upstream" \
             option_proxyarp="$option_proxyarp" \
+            option_dnsproxy="$option_dnsproxy" \
             option_modem_control="$option_modem_control" \
             option_debug="$option_debug" \
             option_tcstatus="$option_tcstatus" \

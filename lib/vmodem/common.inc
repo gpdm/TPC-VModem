@@ -10,14 +10,14 @@ config_port_file=
 
 declare -A config_builtin=(
   [echoser_reset_default]=1 [resultverbose_reset_default]=1 [TERM]=vt100 [baud]=57600
-  [modem_profile]=V34BIS [option_proxyarp]=0 [option_modem_control]=1
+  [modem_profile]=V34BIS [option_proxyarp]=0 [option_dnsproxy]=0 [option_modem_control]=1
   [option_debug]=0 [option_tcstatus]=1 [tc_status_interval]=60
   [lcp_echo_interval]=10 [lcp_echo_failure]=3
   [dns_primary]=9.9.9.9 [dns_secondary]=149.112.112.112
   [dialtone_time]=2 [linenoise_time]=4 [ringback_cycles]=2 [ringback_pause]=3
   [audio_socket]=/run/vmodem/sound.sock [speaker_mode_reset_default]=1
 )
-config_port_keys=(baud modem_profile option_proxyarp option_modem_control
+config_port_keys=(baud modem_profile option_proxyarp option_dnsproxy option_modem_control
   option_debug option_tcstatus tc_status_interval lcp_echo_interval lcp_echo_failure)
 config_keys=(echoser_reset_default resultverbose_reset_default TERM "${config_port_keys[@]}"
   dns_primary dns_secondary dialtone_time linenoise_time ringback_cycles
@@ -96,7 +96,7 @@ validate_uint() {
 config_validate() {
   local -n _vc_check=$1
   local key entry id name down up minimum found=0
-  for key in option_proxyarp option_modem_control option_debug option_tcstatus echoser_reset_default; do
+  for key in option_proxyarp option_dnsproxy option_modem_control option_debug option_tcstatus echoser_reset_default; do
     [[ "${_vc_check[$key]}" == 0 || "${_vc_check[$key]}" == 1 ]] || {
       config_error "Invalid $key: ${_vc_check[$key]}"; return 1;
     }
@@ -307,10 +307,11 @@ setup_modem_menu() {
 setup_ppp_menu() {
   local scope=$1 selection input key i
   local heading='Per-port LCP, PPP defaults'
-  local -a keys=(option_proxyarp option_debug option_tcstatus tc_status_interval
+  local -a keys=(option_proxyarp option_dnsproxy option_debug option_tcstatus tc_status_interval
     lcp_echo_interval lcp_echo_failure option_modem_control)
-  local -a labels=('Proxy ARP' 'PPP Debug' 'Traffic Statistics' 'Statistics Interval'
-    'LCP Echo Interval' 'LCP Echo Failures' 'Modem Control (DCD)')
+  local -a labels=('Proxy ARP' 'Transparent DNS/HTTP Proxy' 'PPP Debug'
+    'Traffic Statistics' 'Statistics Interval' 'LCP Echo Interval'
+    'LCP Echo Failures' 'Modem Control (DCD)')
   local -A edited=()
   local -n current="config_$scope"
   if [[ "$scope" == global ]]; then
