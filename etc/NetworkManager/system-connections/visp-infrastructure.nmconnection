@@ -1,0 +1,19 @@
+[connection]
+id=visp-infrastructure
+uuid=7939b865-1d6f-48a0-a7bc-4fc60b448e31
+type=dummy
+interface-name=visp0
+autoconnect=false
+
+[dummy]
+
+[ipv4]
+method=manual
+# dns proxy address
+address1=100.64.255.53/32
+# http proxy address
+address2=100.64.255.80/32
+never-default=true
+
+[ipv6]
+method=disabled

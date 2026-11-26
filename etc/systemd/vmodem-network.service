@@ -6,12 +6,17 @@
 
 [Unit]
 Description=TPC-VModem shared network configuration
+Requires=NetworkManager.service
+After=NetworkManager.service
 StopWhenUnneeded=yes
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/vmodem/libexec
+ExecStartPre=/usr/bin/nmcli connection up id visp-infrastructure
 ExecStart=/bin/bash /opt/vmodem/libexec/vmodem-network.sh start
 ExecStop=/bin/bash /opt/vmodem/libexec/vmodem-network.sh stop
+# An already-inactive connection must not fail service cleanup.
+ExecStopPost=-/usr/bin/nmcli connection down id visp-infrastructure
 LogNamespace=vmodem

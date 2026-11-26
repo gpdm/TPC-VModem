@@ -81,6 +81,7 @@ check_dependencies() {
     # Required to run the setup itself, not packages to install.
     command -v apt-get   >/dev/null 2>&1 || fail 'apt-get is required.'
     command -v systemctl >/dev/null 2>&1 || fail 'systemd is required.'
+    command -v nmcli     >/dev/null 2>&1 || fail 'NetworkManager with nmcli is required.'
 
     # Check everything once, then install all missing packages together.
     # format is: program:package
@@ -159,6 +160,15 @@ install_vmodem_services() {
     echo '[5/5] Installing dynamic VModem systemd services'
     local systemd_dir=/etc/systemd/system
     local udev_rules_dir=/etc/udev/rules.d
+    local nm_dir=$APP_DIR/etc/NetworkManager/system-connections
+    local nm_profile=$nm_dir/visp-infrastructure.nmconnection
+
+    # Secure the symlink target and its project-owned parent directories.
+    chown root:root "$APP_DIR" "$APP_DIR/etc" "$APP_DIR/etc/NetworkManager" "$nm_dir" "$nm_profile"
+    chmod go-w "$APP_DIR" "$APP_DIR/etc" "$APP_DIR/etc/NetworkManager" "$nm_dir"
+    chmod 600 "$nm_profile"
+    ln -sfn "$nm_profile" /etc/NetworkManager/system-connections/visp-infrastructure.nmconnection
+    nmcli connection reload || fail 'Could not reload NetworkManager profiles.'
 
     # check if historic startup via /etc/rc.local exists
     if [[ -f /etc/rc.local ]] && grep -Eq '^[[:space:]]*[^#]*vmodem' /etc/rc.local; then

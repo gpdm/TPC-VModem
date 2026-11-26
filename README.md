@@ -13,6 +13,9 @@ The goal is not only to make the connection work, but to make it feel a little m
 And what's more fun than a Raspberry Pi emulating one modem?
 Right, *a Raspberry Pi emulating many modems*!
 
+And what is even more fun than that?
+When it brings along an entire virtual ISP!
+
 ## Architecture
 
 TPC-VModem 2.0 supports multiple USB serial adapters.
@@ -51,16 +54,33 @@ Each adapter gets its own modem instance, while networking and audio are shared 
                    |
                 Speaker
 
-  vmodem-network.service: IP forwarding / NAT
+  vmodem-network.service:   IP forwarding / NAT
   CNI host-local:           PPP address allocation
   vmodem-shaper.sh:         PPP traffic shaping
 ```
 
-The `99-vmodem.rules` udev rules start `vmodem@ttyUSB0.service`, `vmodem@ttyUSB1.service` and so on when adapters appear. The modem instances depend on `pigpiod`, `vmodem-network.service` and `vmodem-soundd.service`. systemd starts those shared services when needed. Removing a USB serial adapter stops its vmodem instance.
+* The `99-vmodem.rules` udev rules start `vmodem@ttyUSB0.service`, `vmodem@ttyUSB1.service` and so on when adapters appear. The modem instances depend on `pigpiod`, `vmodem-network.service` and `vmodem-soundd.service`. systemd starts those shared services when needed. Removing a USB serial adapter stops its vmodem instance.
 
-`vmodem.sh` handles Hayes commands, modem settings and dialing. A number specific `NUMBER.sh` takes precedence, otherwise the call is handed over to `ppp.sh`. Modem configuration and PPP settings can be saved per physical USB port.
+* `vmodem.sh` handles Hayes commands, modem settings and dialing. A number specific `NUMBER.sh` takes precedence, otherwise the call is handed over to `ppp.sh`.
 
-`vmodem-network.service` sets up the shared IP forwarding and NAT rules. `ppp.sh` uses CNI host-local to allocate a separate IP address for each connection, then starts `pppd`. The PPP hooks in `vmodem-shaper.sh` apply the selected modem profile's upstream and downstream rates to each PPP interface.
+* `ppp.sh` uses CNI host-local to allocate a separate IP address for each connection,
+then starts `pppd`. The PPP hooks in `vmodem-shaper.sh` apply the selected modem
+profile's upstream and downstream rates to each PPP interface.
+
+* `vmodem-network.service` manages shared IP forwarding, NAT and the Virtual ISP network
+infrastructure. Before network setup, it activates the NetworkManager-managed
+`visp0` dummy interface; after the last modem instance stops, it tears down the
+shared network configuration and deactivates `visp0`.
+
+The infrastructure addresses on `visp0` are:
+
+| Address | Purpose |
+|---------|---------|
+| 100.64.255.53/32 | DNS |
+| 100.64.255.80/32 | HTTP proxy |
+
+These are defined in `etc/NetworkManager/system-connections/visp-infrastructure.nmconnection`.
+
 
 ### Sound
 
@@ -376,6 +396,8 @@ systemctl status vmodem-soundd.service
 TPC-VModem builds upon the original VMODEM work by Oliver Molini, created between 2020 and 2022.
 
 Thanks also go to Billy Stoughton II for bug fixes and contributions to the original project, and to Hamish for helping test Windows 2000 compatibility.
+
+An additional thanks goes to Sergey Evstegneiev for implementation the V.34 modem handshake generator.
 
 ## License
 

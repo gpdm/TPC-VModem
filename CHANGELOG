@@ -42,3 +42,6 @@
 * extracted shared configuration and SETUP menus into lib/vmodem/common.inc
 * added console configurator bin/vmodem-config.sh with optional instance restart
 * added layered global/per-port overrides and consistent ATZ/AT&F reset defaults
+* added a declarative NetworkManager profile for VISP infrastructure on visp0,
+  activated and deactivated with the shared VModem network service
+* README updates
