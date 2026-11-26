@@ -68,11 +68,13 @@ then starts `pppd`. The PPP hooks in `vmodem-shaper.sh` apply the selected modem
 profile's upstream and downstream rates to each PPP interface.
 
 * `vmodem-network.service` manages shared IP forwarding, NAT and the Virtual ISP network
-infrastructure. Before network setup, it activates the NetworkManager-managed
-`visp0` dummy interface; after the last modem instance stops, it tears down the
-shared network configuration and deactivates `visp0`.
+infrastructure, including the `visp0` dummy interface plus associated firewall rules via `nftables`.
 
-The infrastructure addresses on `visp0` are:
+`etc/nftables/subscriber.nft` permits subscriber Internet forwarding and established
+return traffic, masquerading only `100.64.254.0/24` outside PPP and VISP interfaces.
+`etc/nftables/visp.nft` allows subscriber access to the virtual ISP Services.
+
+The infrastructure addresses and services on `visp0` are:
 
 | Address | Purpose |
 |---------|---------|

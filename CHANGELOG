@@ -45,3 +45,5 @@
 * added a declarative NetworkManager profile for VISP infrastructure on visp0,
   activated and deactivated with the shared VModem network service
 * README updates
+* replaced iptables and the network shell script with declarative nftables tables
+  for subscriber NAT/forwarding and VISP services

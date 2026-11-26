@@ -1,0 +1,23 @@
+# Recreate only our table, atomically, even when it does not exist yet.
+add table ip visp
+delete table ip visp
+
+table ip visp {
+    chain input {
+        type filter hook input priority filter; policy accept;
+
+        ip daddr 100.64.255.0/24 iifname "lo" accept
+        iifname "ppp*" ip saddr 100.64.254.0/24 ip daddr 100.64.255.53 udp dport 53 accept
+        iifname "ppp*" ip saddr 100.64.254.0/24 ip daddr 100.64.255.80 tcp dport 80 accept
+        ip daddr 100.64.255.0/24 drop
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+
+        ip saddr 100.64.255.0/24 drop
+        ip daddr 100.64.255.0/24 drop
+        iifname "visp0" drop
+        oifname "visp0" drop
+    }
+}

@@ -14,9 +14,14 @@ StopWhenUnneeded=yes
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/vmodem/libexec
+ExecStartPre=/usr/sbin/nft -f /opt/vmodem/etc/nftables/subscriber.nft
+ExecStartPre=/usr/sbin/nft -f /opt/vmodem/etc/nftables/visp.nft
 ExecStartPre=/usr/bin/nmcli connection up id visp-infrastructure
-ExecStart=/bin/bash /opt/vmodem/libexec/vmodem-network.sh start
-ExecStop=/bin/bash /opt/vmodem/libexec/vmodem-network.sh stop
-# An already-inactive connection must not fail service cleanup.
+ExecStart=/usr/sbin/sysctl -q net.ipv4.ip_forward=1
+ExecStopPost=/usr/sbin/sysctl -q net.ipv4.ip_forward=0
+# An already-inactive connection must not interrupt cleanup.
 ExecStopPost=-/usr/bin/nmcli connection down id visp-infrastructure
+# Adding before deleting tolerates missing tables without hiding nft failures.
+ExecStopPost=/usr/sbin/nft "add table ip visp; delete table ip visp"
+ExecStopPost=/usr/sbin/nft "add table ip subscriber; delete table ip subscriber"
 LogNamespace=vmodem

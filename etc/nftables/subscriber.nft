@@ -1,0 +1,21 @@
+# Recreate only our table, atomically, even when it does not exist yet.
+add table ip subscriber
+delete table ip subscriber
+
+table ip subscriber {
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+
+        iifname "ppp*" oifname != "ppp*" oifname != "visp0" \
+            ip saddr 100.64.254.0/24 ct state { new, established, related } accept
+        iifname != "ppp*" iifname != "visp0" oifname "ppp*" \
+            ip daddr 100.64.254.0/24 ct state { established, related } accept
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+
+        ip saddr 100.64.254.0/24 ip daddr != 100.64.255.0/24 \
+            oifname != "ppp*" oifname != "visp0" masquerade
+    }
+}

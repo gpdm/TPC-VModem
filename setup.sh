@@ -86,7 +86,7 @@ check_dependencies() {
     # Check everything once, then install all missing packages together.
     # format is: program:package
     for entry in python3:python3 pigpiod:pigpio pppd:ppp git:git \
-                 iptables:iptables xxd:xxd stty:coreutils sysctl:procps \
+                 nft:nftables xxd:xxd stty:coreutils sysctl:procps \
                  /usr/lib/cni/host-local:containernetworking-plugins \
                  tc:iproute2 jq:jq wpa_cli:wpasupplicant; do
         program=${entry%%:*}
