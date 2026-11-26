@@ -1,6 +1,6 @@
 #!/bin/bash
 # TPC-VModem traffic shaper, invoked by PPP ip-up.d and ip-down.d hooks.
-# $1: PPP interface, $6: downstream:upstream in bits per second.
+# $1: PPP interface, $6: downstream:upstream[:dnsproxy].
 
 iface=$1
 ifb="ifb${iface}"
@@ -10,8 +10,9 @@ ifb="ifb${iface}"
 
 case "$0" in
   */ip-up.d/*)
-    [[ "$6" =~ ^[0-9]+:[0-9]+$ ]] || exit 0
-    IFS=: read -r downstream upstream <<< "$6"
+    [[ "$6" =~ ^[0-9]+:[0-9]+(:[01])?$ ]] || exit 0
+    IFS=: read -r downstream upstream dnsproxy <<< "$6"
+    dnsproxy=${dnsproxy:-0}
     (( downstream > 0 && upstream > 0 )) || exit 1
 
     # Shape traffic sent by the Pi towards the retro computer.

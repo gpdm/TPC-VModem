@@ -119,6 +119,22 @@ pppd_debug=
 [[ "${option_proxyarp:-0}" == 1 ]] && pppd_proxyarp=proxyarp
 [[ "${option_debug:-0}" == 1 ]] && pppd_debug=debug
 
+# Resolve this session's DNS settings without changing the configured values.
+session_dns_primary=$dns_primary
+session_dns_secondary=$dns_secondary
+session_dnsproxy=0
+if [[ "${option_dnsproxy:-0}" == 1 ]]; then
+  if systemctl is-active --quiet 3proxy.service; then
+    session_dns_primary=100.64.255.53
+    session_dns_secondary=100.64.255.53
+    session_dnsproxy=1
+  else
+    printf 'WARNING: Transparent DNS proxy requested but 3proxy.service is not active; using configured DNS servers.\n' >&2
+  fi
+fi
+printf 'PPP DNS configuration: proxy=%s primary=%s secondary=%s\n' \
+  "$session_dnsproxy" "$session_dns_primary" "$session_dns_secondary" >&2
+
 # Use DCD carrier detection when modem control is enabled.
 [[ "${option_modem_control:-1}" == 1 ]] && pppd_modem_control=modem || pppd_modem_control=local
 
@@ -153,9 +169,9 @@ fi
 pppd noauth nodetach "$pppd_modem_control" lock \
   $pppd_proxyarp $pppd_debug \
   lcp-echo-interval "$lcp_echo_interval" lcp-echo-failure "$lcp_echo_failure" \
-  ms-dns "$dns_primary" ms-dns "$dns_secondary" \
+  ms-dns "$session_dns_primary" ms-dns "$session_dns_secondary" \
   "100.64.254.1:$remote_ip" \
-  ipparam "$profile_downstream:$profile_upstream" \
+  ipparam "$profile_downstream:$profile_upstream:$session_dnsproxy" \
   "${pppd_record_options[@]}" \
   "/dev/$serport" "$baud" &
 pppd_pid=$!
