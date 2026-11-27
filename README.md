@@ -128,6 +128,23 @@ platforms, including the original ARMv6 Raspberry Pi, setup skips 3proxy and
 continues the rest of the installation.
 
 
+#### Transparent HTTP Proxy
+
+Now, what if your browser doesn't support HTTP proxies?
+
+TPC-VModem uses [3proxy](https://3proxy.org/) to provide transparent access to [ProtoWeb](https://protoweb.org/), without having to configure a proxy in the browser.
+
+Enable *Transparent DNS/HTTP Proxy* in the PPP configuration menu for the respective modem. On the next dial, the client is offered our synthetic DNS server, which resolves all IPv4 hostname queries to `100.64.255.80`. UDP DNS and TCP port 80 traffic from that client are also redirected to the respective VISP services.
+
+The HTTP proxy forwards requests to `wayback.protoweb.org:7851` by default.
+
+Please note that the browser needs to send an HTTP `Host` header. Native FTP and HTTPS are not handled by the transparent proxy, and may not work with synthetic DNS.
+
+The option is disabled by default. If 3proxy is not running when a call is established, TPC-VModem uses the regular DNS settings instead.
+
+3proxy is installed on arm64, armhf (ARMv7 or newer) and amd64 systems. On unsupported platforms, including the original Raspberry Pi 1, setup skips 3proxy, but the modem itself remains usable.
+
+
 ### Sound
 
 All audio is generated directly through Raspberry Pi GPIO18, using `pigpiod`. No sound card is needed. The V.34 handshake uses a prepared audio cache, while PPP line noise is either synthesized live or played from a precomputed cache on the original Raspberry Pi 1.

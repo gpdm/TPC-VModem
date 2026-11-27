@@ -227,6 +227,14 @@ install_vmodem_services() {
     ln -sfn "$APP_DIR/etc/systemd/vmodem-network.service" "${systemd_dir}/vmodem-network.service"
     ln -sfn "$APP_DIR/etc/systemd/vmodem-soundd.service" "${systemd_dir}/vmodem-soundd.service"
     ln -sfn "$APP_DIR/etc/udev/99-vmodem.rules" "${udev_rules_dir}/99-vmodem.rules"
+
+    # Register independent PPP hooks before triggering any existing adapters.
+    ln -sfn "$APP_DIR/libexec/vmodem-proxy.sh" /etc/ppp/ip-up.d/zz-vmodem-proxy
+    ln -sfn "$APP_DIR/libexec/vmodem-proxy.sh" /etc/ppp/ip-down.d/00-vmodem-proxy
+    ln -sfn "$APP_DIR/libexec/vmodem-shaper.sh" /etc/ppp/ip-up.d/zz-vmodem-shaper
+    ln -sfn "$APP_DIR/libexec/vmodem-shaper.sh" /etc/ppp/ip-down.d/00-vmodem-shaper
+    echo 'PPP proxy and traffic shaper hooks installed'
+
     systemctl daemon-reload
     udevadm control --reload-rules || fail 'Could not reload udev rules.'
     udevadm trigger --action=add --subsystem-match=tty --sysname-match='ttyUSB*' ||
@@ -234,11 +242,6 @@ install_vmodem_services() {
     udevadm trigger --action=add --subsystem-match=tty --sysname-match='ttyACM*' ||
         fail 'Could not trigger existing ttyACM devices.'
     echo 'Dynamic VModem service template and udev rules installed'
-
-    # install ppp if-up/if-down hooks for VModem traffic shaping
-    ln -sfn "$APP_DIR/libexec/vmodem-shaper.sh" /etc/ppp/ip-up.d/zz-vmodem-shaper
-    ln -sfn "$APP_DIR/libexec/vmodem-shaper.sh" /etc/ppp/ip-down.d/00-vmodem-shaper
-    echo 'PPP traffic shaper installed'
 }
 
 (($# == 0)) || fail 'Usage: sudo bash setup.sh'

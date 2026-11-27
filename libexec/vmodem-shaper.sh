@@ -5,6 +5,9 @@
 iface=$1
 ifb="ifb${iface}"
 
+# ensure we get consistent locale for string operations
+LC_ALL=C
+
 # Only manage PPP interfaces belonging to these hooks.
 [[ "$iface" =~ ^ppp[0-9]+$ && ${#ifb} -le 15 ]] || exit 0
 

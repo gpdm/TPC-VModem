@@ -3,6 +3,10 @@ add table ip visp
 delete table ip visp
 
 table ip visp {
+    set proxy_clients {
+        type ipv4_addr
+    }
+
     chain input {
         type filter hook input priority filter; policy accept;
 
@@ -19,5 +23,15 @@ table ip visp {
         ip daddr 100.64.255.0/24 drop
         iifname "visp0" drop
         oifname "visp0" drop
+    }
+
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+
+        iifname "ppp*" ip saddr @proxy_clients \
+            udp dport 53 dnat to 100.64.255.53:53
+
+        iifname "ppp*" ip saddr @proxy_clients \
+            tcp dport 80 dnat to 100.64.255.80:80
     }
 }
