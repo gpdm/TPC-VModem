@@ -13,6 +13,8 @@ method=manual
 address1=100.64.255.53/32
 # http proxy address
 address2=100.64.255.80/32
+# local web server address
+address3=100.64.255.180/32
 never-default=true
 
 [ipv6]

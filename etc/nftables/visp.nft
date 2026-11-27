@@ -13,6 +13,7 @@ table ip visp {
         ip daddr 100.64.255.0/24 iifname "lo" accept
         iifname "ppp*" ip saddr 100.64.254.0/24 ip daddr 100.64.255.53 udp dport 53 accept
         iifname "ppp*" ip saddr 100.64.254.0/24 ip daddr 100.64.255.80 tcp dport 80 accept
+        iifname "ppp*" ip saddr 100.64.254.0/24 ip daddr 100.64.255.180 tcp dport 80 accept
         ip daddr 100.64.255.0/24 drop
     }
 
@@ -32,6 +33,6 @@ table ip visp {
             udp dport 53 dnat to 100.64.255.53:53
 
         iifname "ppp*" ip saddr @proxy_clients \
-            tcp dport 80 dnat to 100.64.255.80:80
+            ip daddr != 100.64.255.0/24 tcp dport 80 dnat to 100.64.255.80:80
     }
 }

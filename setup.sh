@@ -97,7 +97,9 @@ check_dependencies() {
         # Package maintainer scripts start 3proxy: install our restrictions first.
         chown root:root "$APP_DIR/etc/3proxy/3proxy.cfg"
         chmod 644 "$APP_DIR/etc/3proxy/3proxy.cfg"
-        chmod a+rx "$APP_DIR" "$APP_DIR/etc" "$APP_DIR/etc/3proxy"
+        chmod a+rx "$APP_DIR" "$APP_DIR/etc" "$APP_DIR/etc/3proxy" \
+            "$APP_DIR/www" "$APP_DIR/www/images"
+        chmod 644 "$APP_DIR/www/index.html"
         mkdir -p /etc/systemd/system/3proxy.service.d
         ln -sfn "$APP_DIR/etc/systemd/3proxy.service.d/visp.conf" \
             /etc/systemd/system/3proxy.service.d/visp.conf

@@ -109,24 +109,21 @@ chance of address overlap with the local LAN, and is generally applicable to an 
 #### Virtual ISP Network
 
 Likewise, the RFC 6598 shared space `100.64.255.0/24` address range is reserved for virtual ISP infrastructure.
-NetworkManager manages the service addresses on the `visp0` dummy interface, as of now:
-
-| Address | Service |
-|---------|---------|
-| 100.64.255.53/32 | Synthetic DNS (UDP/53) |
-| 100.64.255.80/32 | HTTP proxy (TCP/80) |
-
+NetworkManager manages the service addresses on the `visp0` dummy interface.
 Firewall rules permit subscribers to access these services and block external access.
 
-3proxy's DNS returns the proxy address for IPv4 hostname queries; its HTTP proxy forwards
-requests to `wayback.protoweb.org:7851`. These settings can be changed in
-`etc/3proxy/3proxy.cfg`. Clients must be configured to use these services; traffic
-is not redirected automatically.
+Currently, the following services are registered:
+
+| Address | Service | Description |
+|---------|---------|-------------|
+| 100.64.255.53/32 | Synthetic DNS (UDP/53) | Returns the `http proxy` address for all IPv4 hostname queries, except for `www.visp.net`, which maps to the `http server` address |
+| 100.64.255.80/32 | HTTP proxy (TCP/80) | Proxies all HTTP traffic transparently to `wayback.protoweb.org:7851` |
+| 100.64.255.180/32 | HTTP server (TCP/80) | Provides the vISP landing web page |
+
 
 3proxy packages support arm64, ARMv7-or-newer armhf, and amd64. On unsupported
-platforms, including the original ARMv6 Raspberry Pi, setup skips 3proxy and
-continues the rest of the installation.
-
+platforms, such as the original ARMv6 Raspberry Pi, setup skips 3proxy.
+The features as described above may therefore be unavailable on some systems.
 
 #### Transparent HTTP Proxy
 
@@ -134,7 +131,7 @@ Now, what if your browser doesn't support HTTP proxies?
 
 TPC-VModem uses [3proxy](https://3proxy.org/) to provide transparent access to [ProtoWeb](https://protoweb.org/), without having to configure a proxy in the browser.
 
-Enable *Transparent DNS/HTTP Proxy* in the PPP configuration menu for the respective modem. On the next dial, the client is offered our synthetic DNS server, which resolves all IPv4 hostname queries to `100.64.255.80`. UDP DNS and TCP port 80 traffic from that client are also redirected to the respective VISP services.
+Enable *Transparent DNS/HTTP Proxy* in the PPP configuration menu for the respective modem. On the next dial, the client is offered our synthetic DNS server, which resolves IPv4 hostname queries to `100.64.255.80`, except `www.visp.test`, which resolves to the local web server at `100.64.255.180`. UDP DNS and external TCP port 80 traffic from that client are also redirected to the respective VISP services.
 
 The HTTP proxy forwards requests to `wayback.protoweb.org:7851` by default.
 

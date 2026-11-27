@@ -51,3 +51,4 @@
   using the packaged service with VISP configuration and shared network lifecycle
 * added per-modem Transparent DNS/HTTP Proxy configuration with global and per-port
   overrides, propagated to the selected dial script
+* added a local VISP web server on 100.64.255.180, served by 3proxy
