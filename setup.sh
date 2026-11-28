@@ -22,15 +22,64 @@ PIGPIOD_OVERRIDE_FILE=/etc/systemd/system/pigpiod.service.d/zz-tpc-vmodem.conf
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-fetch_project() {
-    echo '[1/5] Fetching project files'
+check_os() {
+    # Only Debian 12 (Bookworm) is supported: pigpiod is no longer
+    # available as a package on Debian 13 (Trixie).
+    # see also Issue #1 on https://github.com/gpdm/TPC-VModem/issues
+    [[ -r /etc/os-release ]] || fail 'Cannot detect the operating system (/etc/os-release is missing).'
+    . /etc/os-release
+    [[ ":${ID:-}:${ID_LIKE:-}:" == *debian* ]] || \
+        fail "Unsupported operating system '${ID:-unknown}': a Debian-based system is required."
+    [[ "${VERSION_ID:-}" == 12 ]] || \
+        fail "Unsupported Debian version '${VERSION_ID:-unknown}': only Debian 12 (Bookworm) is supported at this time."
+}
 
-    # git is required before the regular dependency check runs.
-    if ! command -v git >/dev/null 2>&1; then
-        command -v apt-get >/dev/null 2>&1 || fail 'apt-get is required to install git.'
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y git || fail 'Could not install git.'
+check_dependencies() {
+    echo '[1/6] Checking system dependencies'
+    local needed=() entry program package
+
+    # Required to run the setup itself, not packages to install.
+    command -v apt-get   >/dev/null 2>&1 || fail 'apt-get is required.'
+    command -v systemctl >/dev/null 2>&1 || fail 'systemd is required.'
+    command -v nmcli     >/dev/null 2>&1 || fail 'NetworkManager with nmcli is required.'
+
+    # Check everything once, then install all missing packages together.
+    # format is: program:package
+    #
+    # NOTE: 3proxy is intentionally not install here via the bootstrap routine.
+    # 3proxy depends on cloned repo files, which only become available
+    # after the project is cloned.
+    # Therefore, 3proxy setup is handled separately after the project is cloned
+    # in the config_visp() function.
+    for entry in python3:python3 pigpiod:pigpio pppd:ppp git:git \
+                 nft:nftables xxd:xxd stty:coreutils sysctl:procps \
+                 /usr/lib/cni/host-local:containernetworking-plugins \
+                 tc:iproute2 jq:jq wpa_cli:wpasupplicant; do
+        program=${entry%%:*}
+        package=${entry#*:}
+        command -v "$program" >/dev/null 2>&1 || needed+=("$package")
+    done
+
+    if ! command -v python3 >/dev/null 2>&1 || \
+       ! python3 -c 'import pigpio' >/dev/null 2>&1; then
+        needed+=(python3-pigpio)
     fi
+
+    if ((${#needed[@]})); then
+        printf 'Installing dependencies: %s\n' "${needed[*]}"
+        apt-get update --error-on=any
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "${needed[@]}" || \
+            fail 'Package installation failed.'
+    else
+        echo 'System dependencies: OK'
+    fi
+
+    # Functional check after installation: catch Python environment mismatches.
+    python3 -c 'import pigpio' || fail 'Python cannot import pigpio.'
+}
+
+fetch_project() {
+    echo '[2/6] Fetching project files'
 
     if [[ -d "$APP_DIR/.git" ]]; then
         echo "Updating existing installation in $APP_DIR"
@@ -63,89 +112,37 @@ fetch_project() {
 }
 
 check_project() {
-    echo '[2/5] Checking project files'
-    local script
+    echo '[3/6] Checking project files'
+    local script systemd_dir=/etc/systemd/system
 
     echo updating permissions ...
     for script in "$APP_DIR"/bin/* "$APP_DIR"/libexec/*; do
         [[ -f "$script" ]] && chmod 755 -- "$script"
     done
 
+    # disable historic startup entries via /etc/rc.local, if present
+    if [[ -f /etc/rc.local ]] && grep -Eq '^[[:space:]]*[^#]*vmodem' /etc/rc.local; then
+        sed -i.pre-vmodem-setup -E '/^[[:space:]]*[^#]*vmodem/s/^/#/' /etc/rc.local
+        echo 'NOTE: Legacy vmodem start entry found in /etc/rc.local'
+        echo '      Command was commented out.'
+        echo '      (backup saved as /etc/rc.local.pre-vmodem-setup)'
+    fi
+
+    # check if legacy vmodem service exists
+    echo 'Migrating legacy vmodem.service, if present'
+    if systemctl is-active --quiet vmodem.service > /dev/null 2>&1; then
+        systemctl stop vmodem.service || fail 'Could not stop legacy vmodem.service.'
+    fi
+    if systemctl is-enabled --quiet vmodem.service > /dev/null 2>&1; then
+        systemctl disable vmodem.service || fail 'Could not disable legacy vmodem.service.'
+    fi
+    [ -f "${systemd_dir}/vmodem.service" ] && rm -f "${systemd_dir}/vmodem.service"
+
     echo 'Project scripts updated'
 }
 
-check_dependencies() {
-    echo '[3/5] Checking system dependencies'
-    local needed=() entry program package architecture machine proxy_supported=0
-
-    # Required to run the setup itself, not packages to install.
-    command -v apt-get   >/dev/null 2>&1 || fail 'apt-get is required.'
-    command -v systemctl >/dev/null 2>&1 || fail 'systemd is required.'
-    command -v nmcli     >/dev/null 2>&1 || fail 'NetworkManager with nmcli is required.'
-
-    architecture=$(dpkg --print-architecture)
-    machine=$(uname -m)
-    case "$architecture:$machine" in
-        arm64:aarch64|amd64:x86_64|armhf:armv7l|armhf:armv8l|armhf:aarch64)
-            proxy_supported=1 ;;
-        *)
-            printf 'WARNING: 3proxy packages are unsupported on %s (%s); skipping 3proxy installation.\n' \
-                "$architecture" "$machine" >&2 ;;
-    esac
-
-    if ((proxy_supported)); then
-        # Package maintainer scripts start 3proxy: install our restrictions first.
-        chown root:root "$APP_DIR/etc/3proxy/3proxy.cfg"
-        chmod 644 "$APP_DIR/etc/3proxy/3proxy.cfg"
-        chmod a+rx "$APP_DIR" "$APP_DIR/etc" "$APP_DIR/etc/3proxy" \
-            "$APP_DIR/www" "$APP_DIR/www/images"
-        chmod 644 "$APP_DIR/www/index.html"
-        mkdir -p /etc/systemd/system/3proxy.service.d
-        ln -sfn "$APP_DIR/etc/systemd/3proxy.service.d/visp.conf" \
-            /etc/systemd/system/3proxy.service.d/visp.conf
-
-        ln -sfn "$APP_DIR/etc/apt/sources.list.d/3proxy.sources" \
-            /etc/apt/sources.list.d/3proxy.sources
-
-        # Include upgrades to the current repository version.
-        needed+=(3proxy)
-    fi
-
-    # Check everything once, then install all missing packages together.
-    # format is: program:package
-    for entry in python3:python3 pigpiod:pigpio pppd:ppp git:git \
-                 nft:nftables xxd:xxd stty:coreutils sysctl:procps \
-                 /usr/lib/cni/host-local:containernetworking-plugins \
-                 tc:iproute2 jq:jq wpa_cli:wpasupplicant; do
-        program=${entry%%:*}
-        package=${entry#*:}
-        command -v "$program" >/dev/null 2>&1 || needed+=("$package")
-    done
-
-    if ! command -v python3 >/dev/null 2>&1 || \
-       ! python3 -c 'import pigpio' >/dev/null 2>&1; then
-        needed+=(python3-pigpio)
-    fi
-
-    if ((${#needed[@]})); then
-        printf 'Installing dependencies: %s\n' "${needed[*]}"
-        apt-get update --error-on=any
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "${needed[@]}" || \
-            fail 'Package installation failed.'
-    else
-        echo 'System dependencies: OK'
-    fi
-
-    if ((proxy_supported)); then
-        systemctl daemon-reload
-    fi
-
-    # Functional check after installation: catch Python environment mismatches.
-    python3 -c 'import pigpio' || fail 'Python cannot import pigpio.'
-}
-
 configure_pigpiod() {
-    echo '[4/5] Configuring pigpiod'
+    echo '[4/6] Configuring pigpiod'
     local pigpiod_bin config attempt
     pigpiod_bin="$(command -v pigpiod)" || fail 'pigpiod is unavailable.'
     config=$(printf '[Service]\nExecStart=\nExecStart=%s -l -m\n' "$pigpiod_bin")
@@ -188,8 +185,8 @@ UNIT
     echo 'WARN: pigpiod did not become reachable. Check: journalctl -u pigpiod -n 30'
 }
 
-install_vmodem_services() {
-    echo '[5/5] Installing dynamic VModem systemd services'
+configure_vmodem() {
+    echo '[5/6] Installing dynamic VModem systemd services'
     local systemd_dir=/etc/systemd/system
     local udev_rules_dir=/etc/udev/rules.d
     local nm_dir=$APP_DIR/etc/NetworkManager/system-connections
@@ -201,22 +198,6 @@ install_vmodem_services() {
     chmod 600 "$nm_profile"
     ln -sfn "$nm_profile" /etc/NetworkManager/system-connections/visp-infrastructure.nmconnection
     nmcli connection reload || fail 'Could not reload NetworkManager profiles.'
-
-    # check if historic startup via /etc/rc.local exists
-    if [[ -f /etc/rc.local ]] && grep -Eq '^[[:space:]]*[^#]*vmodem' /etc/rc.local; then
-        echo 'WARNING: /etc/rc.local still references vmodem.' >&2
-        echo 'Please remove the old startup entry manually!' >&2
-    fi
-
-    # check if legacy vmodem service exists
-    echo 'Migrating legacy vmodem.service, if present'
-    if systemctl is-active --quiet vmodem.service > /dev/null 2>&1; then
-        systemctl stop vmodem.service || fail 'Could not stop legacy vmodem.service.'
-    fi
-    if systemctl is-enabled --quiet vmodem.service > /dev/null 2>&1; then
-        systemctl disable vmodem.service || fail 'Could not disable legacy vmodem.service.'
-    fi
-    [ -f "${systemd_dir}/vmodem.service" ] && rm -f "${systemd_dir}/vmodem.service"
 
     # configure common logspace for vmodem
     ln -sfn "$APP_DIR/etc/systemd/journald@vmodem.conf" "/etc/systemd/journald@vmodem.conf"
@@ -246,16 +227,62 @@ install_vmodem_services() {
     echo 'Dynamic VModem service template and udev rules installed'
 }
 
+configure_visp() {
+    echo '[6/6] Configuring virtual ISP'
+    local architecture machine
+
+    architecture=$(dpkg --print-architecture)
+    machine=$(uname -m)
+    case "$architecture:$machine" in
+        arm64:aarch64|amd64:x86_64|armhf:armv7l|armhf:armv8l|armhf:aarch64)
+            ;;
+        *)
+            printf 'WARNING: 3proxy packages are unsupported on %s (%s); skipping 3proxy installation.\n' \
+                "$architecture" "$machine" >&2
+            return ;;
+    esac
+
+    # Package maintainer scripts start 3proxy:
+    # Set permissions for 3proxy configuration and web interface files
+    # as otherwise 3proxy may refuse to start due to permission errors.
+    chown root:root "$APP_DIR/etc/3proxy/3proxy.cfg"
+    chmod 644 "$APP_DIR/etc/3proxy/3proxy.cfg"
+    chmod a+rx "$APP_DIR" "$APP_DIR/etc" "$APP_DIR/etc/3proxy" \
+        "$APP_DIR/www" "$APP_DIR/www/images"
+    chmod 644 "$APP_DIR/www/index.html"
+    mkdir -p /etc/systemd/system/3proxy.service.d
+    ln -sfn "$APP_DIR/etc/systemd/3proxy.service.d/visp.conf" \
+        /etc/systemd/system/3proxy.service.d/visp.conf
+
+    # add the 3rd-party package repository
+    ln -sfn "$APP_DIR/etc/apt/sources.list.d/3proxy.sources" \
+        /etc/apt/sources.list.d/3proxy.sources
+
+    # installing 3proxy depends on cloned files from the project repository.
+    # As these became only available after the initial check_dependencies()
+    # and fetch_project() calls, the actual installation of 3proxy
+    # is deferred until this point.
+    echo 'Installing 3proxy'
+    apt-get update --error-on=any
+    DEBIAN_FRONTEND=noninteractive apt-get install -y 3proxy || \
+        fail '3proxy installation failed.'
+
+    systemctl daemon-reload
+    echo 'Virtual ISP (3proxy) configured'
+}
+
 (($# == 0)) || fail 'Usage: sudo bash setup.sh'
 ((EUID == 0)) || fail 'Run as root: sudo bash setup.sh'
+check_os
 
 # The working directory may be removed during a legacy migration.
 cd /
 
+check_dependencies
 fetch_project
 check_project
-check_dependencies
 configure_pigpiod
-install_vmodem_services
+configure_vmodem
+configure_visp
 
 echo 'Setup complete.'

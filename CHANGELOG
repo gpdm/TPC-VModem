@@ -52,3 +52,5 @@
 * added per-modem Transparent DNS/HTTP Proxy configuration with global and per-port
   overrides, propagated to the selected dial script
 * added a local VISP web server on 100.64.255.180, served by 3proxy
+* reworked setup.sh, added check_os() boiler-plate, especially as TPC-VModem is
+  not yet currently ready for Debain 13
